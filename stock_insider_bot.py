@@ -1283,15 +1283,15 @@ def abbreviate_position(position: str) -> str:
         ("CSO", r"\bCSO\b|CHIEF STRATEGY|CHIEF SCIENTIFIC"),
         ("CDO", r"\bCDO\b|CHIEF DATA|CHIEF DIGITAL|CHIEF DEVELOPMENT"),
         ("CPO", r"\bCPO\b|CHIEF PRODUCT|CHIEF PEOPLE"),
-        ("GP", r"\bGROUP PRESIDENT\b"),
-        ("COCH", r"\bCO-?CHAIR(MAN|WOMAN)?\b"),
+        ("GP", r"\bGP\b|\bGROUP PRESIDENT\b"),
+        ("COCH", r"\bCOCH\b|\bCO-?CHAIR(MAN|WOMAN)?\b"),
         ("EVP", r"\bEVP\b|EXECUTIVE VICE PRESIDENT"),
         ("SVP", r"\bSVP\b|SENIOR VICE PRESIDENT"),
         ("VP", r"\bVP\b|VICE PRESIDENT"),
-        ("PRES", r"\bPRESIDENT\b"),
+        ("PRES", r"\bPRES\b|\bPRESIDENT\b"),
         ("CHAIR", r"\bCHAIR(MAN|WOMAN)?\b"),
-        ("DIR", r"\bDIRECTOR\b"),
-        ("OFF", r"\bOFFICER\b"),
+        ("DIR", r"\bDIR\b|\bDIRECTOR\b"),
+        ("OFF", r"\bOFF\b|\bOFFICER\b"),
     ]
     for label, pattern in role_patterns:
         if re.search(pattern, normalized):
