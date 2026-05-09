@@ -3,7 +3,6 @@ name: Daily Insider Check
 on:
   schedule:
     - cron: "0 16 * * *"
-      timezone: "Pacific/Auckland"
 
   workflow_dispatch:
     inputs:
@@ -43,22 +42,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          java-version: "17"
-          distribution: "temurin"
-          cache: "maven"
+          python-version: "3.11"
 
-      - name: Cache Maven local repository
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: |
-            ${{ runner.os }}-maven-
+      - name: Run tests
+        run: python -m unittest discover -v
 
       - name: Run bot
         run: |
-          mvn compile exec:java \
-          -Dexec.args="${{ env.TICKERS }} --threshold=${{ env.THRESHOLD_USD }} --lookback=${{ env.LOOKBACK_DAYS }}"
+          python stock_insider_bot.py "${{ env.TICKERS }}" \
+            --threshold=${{ env.THRESHOLD_USD }} \
+            --lookback=${{ env.LOOKBACK_DAYS }}

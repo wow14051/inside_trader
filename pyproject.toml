@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inside-trader-bot"
+version = "0.1.0"
+description = "SEC Form 4 insider transaction alert bot"
+requires-python = ">=3.11"
+
+[project.scripts]
+sib = "stock_insider_bot:main"
+
+[tool.setuptools]
+py-modules = ["stock_insider_bot"]

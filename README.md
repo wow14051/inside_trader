@@ -1,71 +1,288 @@
-# SEC4-Insider-cronjob
+# Inside Trader Insider Bot
 
-A simple Java bot that runs on GitHub Actions to check for large insider transactions (>500k USD) for specified US stock tickers.
+这是一个用 Python 实现的 SEC Form 4 内部人交易提醒工具。它会检查指定美股代码最近的 Form 4 披露，筛选达到金额阈值的大额买入或卖出，然后通过钉钉机器人或 Discord Webhook 发送提醒。
 
-## Features
-<img width="1206" height="2622" alt="124c8c6a6c8b33514828527908d2c2d4" src="https://github.com/user-attachments/assets/07e4b9ec-45d8-4c35-ae86-306cd23f52ad" />
+项目现在不再依赖 Java/Maven，本地和 GitHub Actions 都只需要 Python 3.11+。
 
-- Checks SEC Form 4 filings for the previous day
-- Filters for purchase (P) and sale (S) transactions over $500,000
-- Sends push notifications via Discord webhook when alerts are found
-- Runs daily at 9 AM UTC or manually via workflow dispatch
+## 核心功能
 
-## Setup
+- 查询 SEC EDGAR Form 4 内部人交易披露。
+- 默认检查最近 7 天，可通过参数或环境变量修改。
+- 只保留 officer/director 相关披露。
+- 只提醒真实买入 `P` 和卖出 `S`，跳过授予、行权等非买卖交易。
+- 按交易金额阈值过滤，默认 `500000` 美元。
+- 优先使用 SEC daily master index，找不到时自动 fallback 到 browse-edgar。
+- 并行下载 SEC index 和 Form 4 文件，减少运行时间。
+- 支持钉钉加签 Webhook。
+- 继续兼容 Discord Webhook。
+- 未提供股票代码时，可自动从项目目录或桌面导入 `.ebk`、`.txt`、`.csv` 股票列表文件。
+- 消息按股票分组，同一只股票的词条放在一起；股票组按最大买入金额优先排序。
 
-1. Fork this repository.
-2. Create a Discord webhook:
-   - Open your Discord server and go to `Server Settings` → `Integrations` → `Webhooks`.
-   - Click `New Webhook` and select a channel where you want alerts to appear.
-   - Copy the webhook URL.
-3. Add the webhook URL to GitHub secrets:
-   - Open your fork on GitHub and go to `Settings` → `Secrets and variables` → `Actions`.
-   - Add a new secret named `DISCORD_WEBHOOK_URL`.
-   - Paste the webhook URL as the value.
-4. (Optional) Configure repo variables for cron defaults:
-   - In `Settings` → `Secrets and variables` → `Variables`, add:
-     - `TICKERS`: Comma-separated tickers, e.g. `AAPL,GOOGL,MSFT`
-     - `THRESHOLD_USD`: Minimum trade size, e.g. `500000`
-     - `LOOKBACK_DAYS`: Lookback days, e.g. `1`
-   - If not set, defaults are `AAPL,GOOGL`, `500000`, `1`.
-5. Run the workflow manually or wait for the daily schedule:
-   - Go to the `Actions` tab, choose `Daily Insider Check`, then `Run workflow`.
-   - Enter tickers, threshold, and lookback values as needed.
+## 通知渠道
 
-## Usage
+通知发送优先级如下：
 
-- **Manual run**: Go to Actions tab, select "Daily Insider Check", click "Run workflow", enter your desired tickers, threshold, and lookback days. Defaults are provided.
-- **Scheduled**: Runs daily automatically using repository variables if set, otherwise uses built-in defaults (`AAPL,GOOGL`, $500k, 1 day lookback).
-- **Configuration**: 
-  - **Repository Variables** (for cron job defaults): Set `TICKERS`, `THRESHOLD_USD`, `LOOKBACK_DAYS` in repo Settings → Variables
-  - **GitHub secret**: Set `DISCORD_WEBHOOK_URL` in Settings → Secrets and variables → Actions
-  - **CLI options**: For local testing or custom runs
-  - **Ticker format**: `BRKB` or `BRK-B` are supported; `BRK.B` is not supported. Ticker input is case-insensitive.
+1. 如果配置了 `DING_WEBHOOK_URL`，发送到钉钉。
+2. 如果没有配置钉钉，但配置了 `DISCORD_WEBHOOK_URL`，发送到 Discord。
+3. 如果两个 Webhook 都没有配置，提醒内容会打印到运行日志。
 
-### Example local CLI commands
+也就是说，旧版 Discord Webhook 支持仍然保留。只要设置 `DISCORD_WEBHOOK_URL`，并且没有设置 `DING_WEBHOOK_URL`，就会走 Discord。
 
-```bash
-mvn exec:java -Dexec.args="--tickers=AAPL,GOOGL,MSFT --threshold=500000 --lookback=7"
+钉钉加签机器人需要同时配置：
+
+```text
+DING_WEBHOOK_URL
+DING_WEBHOOK_SIGN
 ```
 
-```bash
-mvn exec:java -Dexec.args="AAPL,GOOGL,MSFT --threshold=1000000 --lookback=3"
+Discord 只需要配置：
+
+```text
+DISCORD_WEBHOOK_URL
 ```
 
-```bash
-mvn exec:java -Dexec.args="--tickers=ZTS --threshold=500000 --lookback=1 --mock=true"
+## GitHub Actions 配置
+
+在你的 GitHub 仓库里打开：
+
+```text
+Settings -> Secrets and variables -> Actions
 ```
 
-- If `DISCORD_WEBHOOK_URL` is not set, the bot logs alerts to the Actions console instead of failing.
-- Push notifications include ticker, owner, position, action, security, shares, price, and amount on separate lines.
+建议添加以下 Secrets：
 
-## Requirements
+```text
+DING_WEBHOOK_URL       钉钉机器人 Webhook 地址
+DING_WEBHOOK_SIGN      钉钉机器人加签 secret
+DISCORD_WEBHOOK_URL    Discord Webhook 地址；未使用钉钉时生效
+SEC_USER_AGENT         可选，SEC User-Agent
+SEC_CONTACT_EMAIL      可选，SEC From header 邮箱
+```
 
-- Java 21
-- Maven
-- GitHub Actions
+建议添加以下 Variables：
 
-## Notes
+```text
+TICKERS          股票代码列表，例如 AAPL,GOOGL,MSFT
+THRESHOLD_USD    最小交易金额，例如 500000
+LOOKBACK_DAYS    回看天数，例如 7
+```
 
-- Only checks non-derivative transactions (P/S codes)
-- Excludes awards (A) and exercises (M) to avoid RSU-related transactions
-- Data from SEC EDGAR, subject to their terms
+当前 workflow 也支持手动运行。打开 GitHub Actions，选择 `Daily Insider Check`，点击 `Run workflow`，可以临时填写：
+
+```text
+tickers      股票代码列表
+threshold    最小交易金额
+lookback     回看天数
+```
+
+手动输入会覆盖 workflow 里的默认值。
+
+## 本地运行
+
+本项目只使用 Python 标准库，不需要安装第三方依赖。
+
+如果已经安装了本机 CLI，可以直接用 `sib`：
+
+```powershell
+sib
+sib 7
+sib 7 stocklist
+```
+
+首次安装或更新 CLI：
+
+```powershell
+python -m pip install -e .
+```
+
+`sib` 的短参数规则：
+
+```text
+第一个参数：回看天数，例如 7
+第二个参数：股票列表文件名，扩展名可以写也可以不写
+```
+
+例如 `sib 7 stocklist` 会先在项目目录查找名为 `stocklist` 的股票列表文件，扩展名可以省略；项目目录找不到，再去桌面查找。还是找不到的话，就回到原来的股票代码解析逻辑。
+
+直接传入股票代码：
+
+```bash
+python stock_insider_bot.py "AAPL,GOOGL,MSFT" --threshold=500000 --lookback=7
+```
+
+也可以使用显式参数：
+
+```bash
+python stock_insider_bot.py --tickers=AAPL,GOOGL,MSFT --threshold=500000 --lookback=7
+```
+
+指定某个股票列表文件：
+
+```bash
+python stock_insider_bot.py --stock-list=stocklist --lookback=7
+```
+
+PowerShell 环境变量示例：
+
+```powershell
+$env:TICKERS="AAPL,GOOGL,MSFT"
+$env:THRESHOLD_USD="500000"
+$env:LOOKBACK_DAYS="7"
+$env:DING_WEBHOOK_URL="https://oapi.dingtalk.com/robot/send?access_token=..."
+$env:DING_WEBHOOK_SIGN="SEC..."
+python stock_insider_bot.py
+```
+
+如果要本地测试 Discord：
+
+```powershell
+$env:DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..."
+Remove-Item Env:DING_WEBHOOK_URL -ErrorAction SilentlyContinue
+python stock_insider_bot.py --tickers=AAPL,MSFT
+```
+
+注意：如果本机已经设置了 `TICKERS` 环境变量，它会优先于命令行位置参数。想临时用位置参数时，可以先清掉：
+
+```powershell
+Remove-Item Env:TICKERS -ErrorAction SilentlyContinue
+python stock_insider_bot.py "AAPL,MSFT"
+```
+
+## 参数优先级
+
+股票代码来源优先级：
+
+```text
+--tickers 参数 -> --stock-list 指定文件 -> TICKERS 环境变量 -> 命令行第一个位置参数 -> 自动导入股票列表文件
+```
+
+金额阈值来源优先级：
+
+```text
+--threshold 参数 -> THRESHOLD_USD 环境变量 -> 默认 500000
+```
+
+回看天数来源优先级：
+
+```text
+--lookback 参数 -> LOOKBACK_DAYS 环境变量 -> 默认 7
+```
+
+调试日志来源优先级：
+
+```text
+--debug 参数 -> DEBUG 环境变量 -> 默认 true
+```
+
+## 自动导入股票列表
+
+如果没有提供 `--tickers`、`TICKERS` 或命令行位置参数，程序会自动寻找股票列表文件。
+
+搜索顺序：
+
+1. 先搜索项目目录，也就是 `stock_insider_bot.py` 所在目录。
+2. 如果项目目录没有找到合格文件，再搜索当前用户桌面。
+3. 如果找到多个合格文件，会全部导入，并自动去重。
+
+支持的文件后缀：
+
+```text
+.ebk
+.txt
+.csv
+```
+
+支持的内容示例：
+
+```text
+AAPL
+MSFT
+NASDAQ:NVDA
+BRK-B
+```
+
+```csv
+company,ticker
+Apple,AAPL
+Nvidia,NVDA
+Zoetis,ZTS
+```
+
+EBK 示例：
+
+```text
+31#CRSP
+31#BNTX
+31#TEM
+31#RKLB
+```
+
+程序会做宽松判断：如果文件看起来像股票列表，就导入；普通笔记、README、日志这类文本会尽量跳过。
+
+## 消息排序和展示
+
+提醒消息会按股票分组，不再把同一只股票拆散。
+
+股票组排序规则：
+
+1. 有买入的股票排在前面。
+2. 按该股票的最大买入金额从大到小排序。
+3. 没有买入的股票，再按最大交易金额从大到小排序。
+4. 金额相同时按股票代码排序。
+
+同一只股票内部排序规则：
+
+1. `BUY` 在前，`SELL` 在后。
+2. 同类交易按金额从大到小排序。
+
+买入会用更醒目的 Markdown 加粗和红色标记提示。Discord 和钉钉都支持 Markdown 的一部分，但它们的 Webhook Markdown 都不支持任意字体颜色，所以不能像 HTML 一样指定蓝色或红色字体。
+
+## 性能参数
+
+默认已经开启并行下载。一般不用调整；如果 SEC 访问不稳定，可以适当降低 worker 数。
+
+```text
+INDEX_WORKERS    SEC master-index 并行下载数，默认 4
+FORM4_WORKERS    Form 4 文件并行下载数，默认 8
+```
+
+PowerShell 示例：
+
+```powershell
+$env:INDEX_WORKERS="2"
+$env:FORM4_WORKERS="4"
+python stock_insider_bot.py --tickers=AAPL,MSFT
+```
+
+## 测试
+
+运行单元测试：
+
+```bash
+python -m unittest discover -v
+```
+
+运行语法检查：
+
+```bash
+python -m py_compile stock_insider_bot.py tests/test_stock_insider_bot.py
+```
+
+## 文件说明
+
+```text
+stock_insider_bot.py                 Python 主程序
+tests/test_stock_insider_bot.py      单元测试
+.github/workflows/daily-check.yml    GitHub Actions 定时任务
+```
+
+## 安全说明
+
+- 不要把 Webhook URL、钉钉 sign、邮箱等敏感配置写死到代码里。
+- GitHub 上使用 Secrets 保存敏感值。
+- 本地可以用环境变量调试。
+- `.env` 和 `.env.*` 已加入 `.gitignore`，不会被 Git 默认提交。
+
+## 数据来源
+
+数据来自 SEC EDGAR。SEC 对自动化访问有 User-Agent 和访问频率要求；建议配置 `SEC_USER_AGENT` 和 `SEC_CONTACT_EMAIL`，并避免把并发数调得过高。
