@@ -275,10 +275,10 @@ class StockInsiderBotTests(unittest.TestCase):
         self.assertNotIn("Priority Buys", message)
         self.assertNotIn("Sells ·", message)
         self.assertNotIn("```diff", message)
-        self.assertIn("🔴 **MSFT · BUY · $605.0K**", message)
-        self.assertIn("- `2026-05-01` · **Jane Doe** · 10b5-1", message)
-        self.assertIn("- CEO", message)
-        self.assertIn("- `10.0K @ $60.50` · 持仓 `25.0K`", message)
+        self.assertIn("🔸  MSFT · BUY · $605.0K  ", message)
+        self.assertIn("　　•  2026-05-01 · Jane Doe · 10b5-1  ", message)
+        self.assertIn("　　•  CEO  ", message)
+        self.assertIn("　　•  10.0K @ $60.50 · 持仓 25.0K", message)
 
     def test_sell_notification_uses_short_multiline_block(self):
         alert = bot.AlertEntry(
@@ -294,10 +294,10 @@ class StockInsiderBotTests(unittest.TestCase):
         )
         message = bot.build_grouped_notification({"SE": [alert]}, "20260508")
         self.assertNotIn("Sells ·", message)
-        self.assertIn("**SE · SELL · $584.1K**", message)
-        self.assertIn("- `2026-05-04` · Ye Gang", message)
-        self.assertIn("- COO", message)
-        self.assertIn("- `6.8K @ $85.90` · 持仓 `190.7K`", message)
+        self.assertIn("🔹  SE · SELL · $584.1K  ", message)
+        self.assertIn("　　•  2026-05-04 · Ye Gang  ", message)
+        self.assertIn("　　•  COO  ", message)
+        self.assertIn("　　•  6.8K @ $85.90 · 持仓 190.7K", message)
 
     def test_notification_groups_by_ticker_and_sorts_groups_by_max_buy_amount(self):
         small_buy = bot.AlertEntry("Buyer A", "CFO", "BUY", 1000, 100, 100000, False, "2026-05-01", 1000)
@@ -308,10 +308,10 @@ class StockInsiderBotTests(unittest.TestCase):
             {"AAA": [small_sell, small_buy], "BBB": [big_sell, big_buy]},
             "20260508",
         )
-        self.assertLess(message.index("🔴 **BBB · BUY · $900.0K**"), message.index("**BBB · SELL · $800.0K**"))
-        self.assertLess(message.index("**BBB · SELL · $800.0K**"), message.index("🔴 **AAA · BUY · $100.0K**"))
-        self.assertLess(message.index("🔴 **AAA · BUY · $100.0K**"), message.index("**AAA · SELL · $200.0K**"))
-        self.assertIn("持仓 `3.0K`\n\n---\n\n🔴 **AAA", message)
+        self.assertLess(message.index("🔸  BBB · BUY · $900.0K"), message.index("🔹  BBB · SELL · $800.0K"))
+        self.assertLess(message.index("🔹  BBB · SELL · $800.0K"), message.index("🔸  AAA · BUY · $100.0K"))
+        self.assertLess(message.index("🔸  AAA · BUY · $100.0K"), message.index("🔹  AAA · SELL · $200.0K"))
+        self.assertIn("持仓 3.0K\n\n---\n\n🔸  AAA", message)
 
     def test_dingtalk_body_does_not_prepend_visible_title(self):
         original_post_json = bot.post_json
@@ -323,7 +323,46 @@ class StockInsiderBotTests(unittest.TestCase):
 
             bot.post_json = fake_post_json
             self.assertTrue(bot.send_dingtalk_webhook("https://example.test/webhook", None, "Insider Alert", "**AAPL**"))
-            self.assertEqual(captured["payload"]["markdown"]["text"], "**AAPL**")
+            self.assertIn("**AAPL**", captured["payload"]["markdown"]["text"])
+            self.assertTrue(captured["payload"]["markdown"]["text"].startswith("---\n---\n# ⏰  (1/1)\n# "))
+            self.assertIn("\n---\n\n", captured["payload"]["markdown"]["text"])
+        finally:
+            bot.post_json = original_post_json
+
+    def test_dingtalk_splits_large_messages_under_payload_limit(self):
+        original_post_json = bot.post_json
+        captured = []
+        try:
+            def fake_post_json(url, payload):
+                captured.append(payload)
+                return 200, '{"errcode":0,"errmsg":"ok"}'
+
+            bot.post_json = fake_post_json
+            block = (
+                "🔹  PWR · SELL · $8.3M  \n"
+                "　　•  2026-05-05 · Austin Earl C. Jr.  \n"
+                "　　•  President and CEO  \n"
+                "　　•  10.7K @ $771.44 · 持仓 585.9K"
+            )
+            message = "\n\n---\n\n".join([block] * 8)
+
+            self.assertTrue(
+                bot.send_dingtalk_messages(
+                    "https://example.test/webhook",
+                    None,
+                    "Insider Alert",
+                    message,
+                    max_payload_bytes=700,
+                )
+            )
+            self.assertGreater(len(captured), 1)
+            for payload in captured:
+                text = payload["markdown"]["text"]
+                size = bot.dingtalk_payload_byte_size("Insider Alert", text)
+                self.assertLessEqual(size, 700)
+                self.assertRegex(text, r"^---\n---\n# ⏰  \(\d+/\d+\)\n# ")
+                self.assertIn("\n---\n\n", text)
+            self.assertTrue(captured[0]["markdown"]["text"].startswith(f"---\n---\n# ⏰  (1/{len(captured)})\n# "))
         finally:
             bot.post_json = original_post_json
 

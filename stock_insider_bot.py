@@ -37,6 +37,8 @@ DEFAULT_DEBUG = True
 HTTP_TIMEOUT = 30
 DEFAULT_INDEX_WORKERS = 4
 DEFAULT_FORM4_WORKERS = 8
+DINGTALK_MAX_BODY_BYTES = 20_000
+DINGTALK_SAFE_BODY_BYTES = DINGTALK_MAX_BODY_BYTES - 2_000
 DESKTOP_TICKER_EXTENSIONS = {".ebk", ".txt", ".csv"}
 MAX_DESKTOP_TICKER_FILE_BYTES = 2_000_000
 
@@ -1181,18 +1183,22 @@ def format_alert_block(ticker: str, entry: AlertEntry) -> list[str]:
 
     if entry.kind == "BUY":
         return [
-            f"🔴 **{ticker} · BUY · {amount}**",
-            f"- `{tx_date}` · **{owner}**{plan}",
-            f"- {position}",
-            f"- `{shares} @ ${entry.price:,.2f}` · 持仓 `{owned_after}`",
+            markdown_hard_break(f"🔸  {ticker} · BUY · {amount}"),
+            markdown_hard_break(f"　　•  {tx_date} · {owner}{plan}"),
+            markdown_hard_break(f"　　•  {position}"),
+            f"　　•  {shares} @ ${entry.price:,.2f} · 持仓 {owned_after}",
         ]
 
     return [
-        f"**{ticker} · SELL · {amount}**",
-        f"- `{tx_date}` · {owner}{plan}",
-        f"- {position}",
-        f"- `{shares} @ ${entry.price:,.2f}` · 持仓 `{owned_after}`",
+        markdown_hard_break(f"🔹  {ticker} · SELL · {amount}"),
+        markdown_hard_break(f"　　•  {tx_date} · {owner}{plan}"),
+        markdown_hard_break(f"　　•  {position}"),
+        f"　　•  {shares} @ ${entry.price:,.2f} · 持仓 {owned_after}",
     ]
+
+
+def markdown_hard_break(line: str) -> str:
+    return f"{line}  "
 
 
 def compact_display_text(value: str) -> str:
@@ -1253,22 +1259,155 @@ def send_dingtalk_webhook(
     webhook_url: str, secret: str | None, title: str, message: str
 ) -> bool:
     try:
-        signed_url = build_dingtalk_url(webhook_url, secret)
-        payload = {
-            "msgtype": "markdown",
-            "markdown": {"title": title, "text": message},
-        }
-        status, body = post_json(signed_url, payload)
-        success = 200 <= status < 300 and '"errcode":0' in body.replace(" ", "")
-        if not success:
-            print(
-                f"Warning: DingTalk notification failed. status={status} body={body}",
-                file=sys.stderr,
-            )
-        return success
+        return send_dingtalk_messages(webhook_url, secret, title, message)
     except Exception as exc:
         print(f"Warning: failed to send DingTalk notification: {exc}", file=sys.stderr)
         return False
+
+
+def send_dingtalk_messages(
+    webhook_url: str,
+    secret: str | None,
+    title: str,
+    message: str,
+    max_payload_bytes: int = DINGTALK_SAFE_BODY_BYTES,
+) -> bool:
+    chunks = split_dingtalk_message(title, message, max_payload_bytes)
+    success = True
+    for chunk in chunks:
+        if not send_single_dingtalk_message(webhook_url, secret, title, chunk):
+            success = False
+    return success
+
+
+def send_single_dingtalk_message(
+    webhook_url: str, secret: str | None, title: str, message: str
+) -> bool:
+    signed_url = build_dingtalk_url(webhook_url, secret)
+    payload = build_dingtalk_payload(title, message)
+    status, body = post_json(signed_url, payload)
+    success = 200 <= status < 300 and '"errcode":0' in body.replace(" ", "")
+    if not success:
+        print(
+            f"Warning: DingTalk notification failed. status={status} body={body}",
+            file=sys.stderr,
+        )
+    return success
+
+
+def split_dingtalk_message(
+    title: str,
+    message: str,
+    max_payload_bytes: int = DINGTALK_SAFE_BODY_BYTES,
+    timestamp: str | None = None,
+) -> list[str]:
+    timestamp = timestamp or current_dingtalk_segment_timestamp()
+    message = message.strip()
+    if dingtalk_segment_payload_byte_size(title, message, timestamp) <= max_payload_bytes:
+        return [format_dingtalk_segment(message, timestamp)]
+
+    chunks: list[str] = []
+    current = ""
+    for block in split_markdown_blocks(message):
+        for part in split_dingtalk_block(title, block, max_payload_bytes, timestamp):
+            candidate = append_markdown_block(current, part)
+            if current and dingtalk_segment_payload_byte_size(title, candidate, timestamp) > max_payload_bytes:
+                chunks.append(current)
+                current = part
+            else:
+                current = candidate
+
+    if current:
+        chunks.append(current)
+    chunks = chunks or [message]
+    total = len(chunks)
+    return [
+        format_dingtalk_segment(chunk, timestamp, index, total)
+        for index, chunk in enumerate(chunks, 1)
+    ]
+
+
+def split_markdown_blocks(message: str) -> list[str]:
+    return [block for block in re.split(r"\n\s*\n", message) if block.strip()]
+
+
+def append_markdown_block(current: str, block: str) -> str:
+    return block if not current else f"{current}\n\n{block}"
+
+
+def split_dingtalk_block(
+    title: str, block: str, max_payload_bytes: int, timestamp: str
+) -> list[str]:
+    if dingtalk_segment_payload_byte_size(title, block, timestamp) <= max_payload_bytes:
+        return [block]
+
+    parts: list[str] = []
+    current = ""
+    for line in block.splitlines():
+        candidate = line if not current else f"{current}\n{line}"
+        if dingtalk_segment_payload_byte_size(title, candidate, timestamp) <= max_payload_bytes:
+            current = candidate
+            continue
+        if current:
+            parts.append(current)
+            current = ""
+        if dingtalk_segment_payload_byte_size(title, line, timestamp) <= max_payload_bytes:
+            current = line
+        else:
+            parts.extend(split_dingtalk_line(title, line, max_payload_bytes, timestamp))
+
+    if current:
+        parts.append(current)
+    return parts
+
+
+def split_dingtalk_line(
+    title: str, line: str, max_payload_bytes: int, timestamp: str
+) -> list[str]:
+    parts: list[str] = []
+    remaining = line
+    while remaining:
+        low, high = 1, len(remaining)
+        best = 0
+        while low <= high:
+            mid = (low + high) // 2
+            candidate = remaining[:mid]
+            if dingtalk_segment_payload_byte_size(title, candidate, timestamp) <= max_payload_bytes:
+                best = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+        if best <= 0:
+            raise ValueError("DingTalk payload byte limit is too small for any content")
+        parts.append(remaining[:best])
+        remaining = remaining[best:]
+    return parts
+
+
+def current_dingtalk_segment_timestamp() -> str:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def format_dingtalk_segment(
+    message: str, timestamp: str, segment_index: int = 1, segment_total: int = 1
+) -> str:
+    segment_label = f"  ({segment_index}/{segment_total})"
+    return f"---\n---\n# ⏰{segment_label}\n# {timestamp}\n---\n\n{message.strip()}"
+
+
+def build_dingtalk_payload(title: str, message: str) -> dict:
+    return {
+        "msgtype": "markdown",
+        "markdown": {"title": title, "text": message},
+    }
+
+
+def dingtalk_payload_byte_size(title: str, message: str) -> int:
+    return len(json.dumps(build_dingtalk_payload(title, message), ensure_ascii=False).encode("utf-8"))
+
+
+def dingtalk_segment_payload_byte_size(title: str, message: str, timestamp: str) -> int:
+    return dingtalk_payload_byte_size(title, format_dingtalk_segment(message, timestamp))
 
 
 def build_dingtalk_url(
