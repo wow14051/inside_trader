@@ -33,7 +33,7 @@ TICKER_URL = "https://www.sec.gov/include/ticker.txt"
 DEFAULT_SEC_USER_AGENT = "SEC4-Insider-Bot AdminContact@example.com"
 DEFAULT_SEC_CONTACT_EMAIL = "contact@example.com"
 DEFAULT_MINIMUM_USD = 200_000
-DEFAULT_MAX_LOOKBACK_DAYS = 7
+DEFAULT_MAX_LOOKBACK_DAYS = 3
 DEFAULT_DEBUG = True
 HTTP_TIMEOUT = 30
 DEFAULT_INDEX_WORKERS = 4
@@ -319,10 +319,10 @@ def usage_text() -> str:
 
 Usage:
   sib
-  sib 7
-  sib 7 stocklist
-  python stock_insider_bot.py --tickers=AAPL,MSFT --lookback=7
-  python stock_insider_bot.py --stock-list=stocklist --lookback=7
+  sib 3
+  sib 3 stocklist
+  python stock_insider_bot.py --tickers=AAPL,MSFT --lookback=3
+  python stock_insider_bot.py --stock-list=stocklist --lookback=3
 
 sib arguments:
   first argument   lookback days

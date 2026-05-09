@@ -7,7 +7,7 @@
 ## 核心功能
 
 - 查询 SEC EDGAR Form 4 内部人交易披露。
-- 默认检查最近 7 天，可通过参数或环境变量修改。
+- 默认检查最近 3 天，可通过参数或环境变量修改。
 - 只保留 officer/director 相关披露。
 - 只提醒真实买入 `P` 和卖出 `S`，跳过授予、行权等非买卖交易。
 - 按交易金额阈值过滤，默认 `200000` 美元。
@@ -64,17 +64,19 @@ SEC_CONTACT_EMAIL      可选，SEC From header 邮箱
 建议添加以下 Variables：
 
 ```text
-TICKERS          股票代码列表，例如 AAPL,GOOGL,MSFT
 THRESHOLD_USD    最小交易金额，例如 200000
-LOOKBACK_DAYS    回看天数，例如 7
+LOOKBACK_DAYS    回看天数，例如 3
 ```
+
+当前 workflow 默认使用仓库里的 `美股.ebk` 股票列表，并在北京时间每天 15:00 自动运行一次。GitHub Actions 的 cron 使用 UTC，所以 workflow 中对应写成 `0 7 * * *`。
 
 当前 workflow 也支持手动运行。打开 GitHub Actions，选择 `Daily Insider Check`，点击 `Run workflow`，可以临时填写：
 
 ```text
-tickers      股票代码列表
-threshold    最小交易金额
-lookback     回看天数
+stock_list   仓库中的股票列表文件名，默认 美股
+tickers      可选，临时覆盖股票列表的股票代码
+threshold    最小交易金额，默认 200000
+lookback     回看天数，默认 3
 ```
 
 手动输入会覆盖 workflow 里的默认值。
@@ -87,8 +89,8 @@ lookback     回看天数
 
 ```powershell
 sib
-sib 7
-sib 7 stocklist
+sib 3
+sib 3 stocklist
 ```
 
 首次安装或更新 CLI：
@@ -100,28 +102,29 @@ python -m pip install -e .
 `sib` 的短参数规则：
 
 ```text
-第一个参数：回看天数，例如 7
+第一个参数：回看天数，例如 3
 第二个参数：股票列表文件名，扩展名可以写也可以不写
 ```
 
-例如 `sib 7 stocklist` 会先在项目目录查找名为 `stocklist` 的股票列表文件，扩展名可以省略；项目目录找不到，再去桌面查找。还是找不到的话，就回到原来的股票代码解析逻辑。
+例如 `sib 3 stocklist` 会先在项目目录查找名为 `stocklist` 的股票列表文件，扩展名可以省略；项目目录找不到，再去桌面查找。还是找不到的话，就回到原来的股票代码解析逻辑。
 
 直接传入股票代码：
 
 ```bash
-python stock_insider_bot.py "AAPL,GOOGL,MSFT" --threshold=200000 --lookback=7
+python stock_insider_bot.py "AAPL,GOOGL,MSFT" --threshold=200000 --lookback=3
 ```
 
 也可以使用显式参数：
 
 ```bash
-python stock_insider_bot.py --tickers=AAPL,GOOGL,MSFT --threshold=200000 --lookback=7
+python stock_insider_bot.py --tickers=AAPL,GOOGL,MSFT --threshold=200000 --lookback=3
 ```
 
 指定某个股票列表文件：
 
 ```bash
-python stock_insider_bot.py --stock-list=stocklist --lookback=7
+python stock_insider_bot.py --stock-list=stocklist --lookback=3
+python stock_insider_bot.py --stock-list=美股 --lookback=3
 ```
 
 PowerShell 环境变量示例：
@@ -129,7 +132,7 @@ PowerShell 环境变量示例：
 ```powershell
 $env:TICKERS="AAPL,GOOGL,MSFT"
 $env:THRESHOLD_USD="200000"
-$env:LOOKBACK_DAYS="7"
+$env:LOOKBACK_DAYS="3"
 $env:DING_WEBHOOK_URL="https://oapi.dingtalk.com/robot/send?access_token=..."
 $env:DING_WEBHOOK_SIGN="SEC..."
 python stock_insider_bot.py
@@ -167,7 +170,7 @@ python stock_insider_bot.py "AAPL,MSFT"
 回看天数来源优先级：
 
 ```text
---lookback 参数 -> LOOKBACK_DAYS 环境变量 -> 默认 7
+--lookback 参数 -> LOOKBACK_DAYS 环境变量 -> 默认 3
 ```
 
 调试日志来源优先级：
@@ -303,6 +306,7 @@ python -m py_compile stock_insider_bot.py tests/test_stock_insider_bot.py
 
 ```text
 stock_insider_bot.py                 Python 主程序
+美股.ebk                             默认股票列表，GitHub Actions 使用
 tests/test_stock_insider_bot.py      单元测试
 .github/workflows/daily-check.yml    GitHub Actions 定时任务
 ```

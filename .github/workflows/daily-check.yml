@@ -2,14 +2,20 @@ name: Daily Insider Check
 
 on:
   schedule:
-    - cron: "0 16 * * *"
+    # GitHub cron uses UTC. 07:00 UTC = 15:00 Asia/Shanghai.
+    - cron: "0 7 * * *"
 
   workflow_dispatch:
     inputs:
-      tickers:
-        description: "Comma-separated list of stock tickers"
+      stock_list:
+        description: "Stock list file name in the repository"
         required: false
-        default: "NVDA,AMZN,AAPL,GOOGL,SOFI,TEAM,CROX,V,STZ,DVA,OXY,CRM,SIEGY,DPZ,TRI,EL,DIS,WDFC,AXP,WM,ELV,MOH,KO,LVMUY,COST,PDD,MCO,RKLB"
+        default: "美股"
+
+      tickers:
+        description: "Optional comma-separated ticker override"
+        required: false
+        default: ""
 
       threshold:
         description: "Minimum trade size in USD"
@@ -19,7 +25,7 @@ on:
       lookback:
         description: "Days to search back for a valid SEC master index"
         required: false
-        default: "7"
+        default: "3"
 
 env:
   DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -28,11 +34,13 @@ env:
   SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
   SEC_CONTACT_EMAIL: ${{ secrets.SEC_CONTACT_EMAIL }}
 
-  TICKERS: ${{ github.event.inputs.tickers || 'NVDA,AMZN,AAPL,GOOGL,SOFI,TEAM,CROX,V,STZ,DVA,OXY,CRM,SIEGY,DPZ,TRI,EL,DIS,WDFC,AXP,WM,ELV,MOH,KO,LVMUY,COST,PDD,MCO,RKLB' }}
+  STOCK_LIST: ${{ github.event.inputs.stock_list || '美股' }}
+
+  TICKERS: ${{ github.event.inputs.tickers || '' }}
 
   THRESHOLD_USD: ${{ github.event.inputs.threshold || '200000' }}
 
-  LOOKBACK_DAYS: ${{ github.event.inputs.lookback || '7' }}
+  LOOKBACK_DAYS: ${{ github.event.inputs.lookback || '3' }}
 
 jobs:
   check:
@@ -52,6 +60,12 @@ jobs:
 
       - name: Run bot
         run: |
-          python stock_insider_bot.py "${{ env.TICKERS }}" \
-            --threshold=${{ env.THRESHOLD_USD }} \
-            --lookback=${{ env.LOOKBACK_DAYS }}
+          if [ -n "${TICKERS}" ]; then
+            python stock_insider_bot.py --tickers="${TICKERS}" \
+              --threshold="${THRESHOLD_USD}" \
+              --lookback="${LOOKBACK_DAYS}"
+          else
+            python stock_insider_bot.py --stock-list="${STOCK_LIST}" \
+              --threshold="${THRESHOLD_USD}" \
+              --lookback="${LOOKBACK_DAYS}"
+          fi
