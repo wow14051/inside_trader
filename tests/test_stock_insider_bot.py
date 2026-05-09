@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 import hashlib
 import hmac
 from pathlib import Path
@@ -108,6 +108,12 @@ class StockInsiderBotTests(unittest.TestCase):
         self.assertEqual(bot.find_cik_for_ticker("brk.b", mapping), "1067983")
         self.assertEqual(bot.find_cik_for_ticker("MSFT", mapping), "0000789019")
         self.assertIsNone(bot.find_cik_for_ticker("???", mapping))
+
+    def test_parse_tickers_sorts_and_deduplicates(self):
+        self.assertEqual(
+            bot.parse_tickers("MSFT,aapl, BRK.B,msft,,GOOGL"),
+            ["AAPL", "BRK.B", "GOOGL", "MSFT"],
+        )
 
     def test_extract_tickers_from_plain_stock_list(self):
         text = """
@@ -258,6 +264,25 @@ class StockInsiderBotTests(unittest.TestCase):
         self.assertEqual(alert.transaction_date, "2026-05-01")
         self.assertEqual(alert.shares_owned_after, 25000)
 
+    def test_parse_form4_infers_position_when_title_says_see_remarks(self):
+        officer_xml = (
+            FORM4_XML
+            .replace("<isDirector>1</isDirector>", "<isDirector>false</isDirector>")
+            .replace("<isOfficer>false</isOfficer>", "<isOfficer>true</isOfficer>")
+            .replace("<officerTitle>CEO</officerTitle>", "<officerTitle>See Remarks</officerTitle>")
+        )
+        officer_alert = bot.parse_form4(officer_xml, 500_000, {"789019": "MSFT"})["MSFT"][0]
+        self.assertEqual(officer_alert.position, "Officer")
+        self.assertIn("🔸 MSFT · BUY · $605K · 高管  ", bot.build_grouped_notification({"MSFT": [officer_alert]}, "20260508"))
+
+        director_xml = FORM4_XML.replace(
+            "<officerTitle>CEO</officerTitle>",
+            "<officerTitle>See Remarks</officerTitle>",
+        )
+        director_alert = bot.parse_form4(director_xml, 500_000, {"789019": "MSFT"})["MSFT"][0]
+        self.assertEqual(director_alert.position, "Director")
+        self.assertIn("🔸 MSFT · BUY · $605K · 董事  ", bot.build_grouped_notification({"MSFT": [director_alert]}, "20260508"))
+
     def test_grouped_notification_is_readable_and_highlights_buys(self):
         alert = bot.AlertEntry(
             owner_name="Jane Doe",
@@ -275,10 +300,10 @@ class StockInsiderBotTests(unittest.TestCase):
         self.assertNotIn("Priority Buys", message)
         self.assertNotIn("Sells ·", message)
         self.assertNotIn("```diff", message)
-        self.assertIn("🔸  MSFT · BUY · $605.0K  ", message)
-        self.assertIn("　　•  2026-05-01 · Jane Doe · 10b5-1  ", message)
-        self.assertIn("　　•  CEO  ", message)
-        self.assertIn("　　•  10.0K @ $60.50 · 持仓 25.0K", message)
+        self.assertIn("🔸 MSFT · BUY · $605K · CEO  ", message)
+        self.assertIn("　  2026-05-01 · 10b5-1   +40%@ $60.5", message)
+        self.assertNotIn("买10.0K", message)
+        self.assertNotIn("Jane Doe", message)
 
     def test_sell_notification_uses_short_multiline_block(self):
         alert = bot.AlertEntry(
@@ -294,10 +319,10 @@ class StockInsiderBotTests(unittest.TestCase):
         )
         message = bot.build_grouped_notification({"SE": [alert]}, "20260508")
         self.assertNotIn("Sells ·", message)
-        self.assertIn("🔹  SE · SELL · $584.1K  ", message)
-        self.assertIn("　　•  2026-05-04 · Ye Gang  ", message)
-        self.assertIn("　　•  COO  ", message)
-        self.assertIn("　　•  6.8K @ $85.90 · 持仓 190.7K", message)
+        self.assertIn("🔹 SE · SELL · $584K · COO  ", message)
+        self.assertIn("　  2026-05-04   -3.6%@ $85.9", message)
+        self.assertNotIn("卖6.8K", message)
+        self.assertNotIn("Ye Gang", message)
 
     def test_notification_groups_by_ticker_and_sorts_groups_by_max_buy_amount(self):
         small_buy = bot.AlertEntry("Buyer A", "CFO", "BUY", 1000, 100, 100000, False, "2026-05-01", 1000)
@@ -308,10 +333,38 @@ class StockInsiderBotTests(unittest.TestCase):
             {"AAA": [small_sell, small_buy], "BBB": [big_sell, big_buy]},
             "20260508",
         )
-        self.assertLess(message.index("🔸  BBB · BUY · $900.0K"), message.index("🔹  BBB · SELL · $800.0K"))
-        self.assertLess(message.index("🔹  BBB · SELL · $800.0K"), message.index("🔸  AAA · BUY · $100.0K"))
-        self.assertLess(message.index("🔸  AAA · BUY · $100.0K"), message.index("🔹  AAA · SELL · $200.0K"))
-        self.assertIn("持仓 3.0K\n\n---\n\n🔸  AAA", message)
+        self.assertLess(message.index("🔸 BBB · BUY · $900K"), message.index("🔹 BBB · SELL · $800K"))
+        self.assertLess(message.index("🔹 BBB · SELL · $800K"), message.index("🔸 AAA · BUY · $100K"))
+        self.assertLess(message.index("🔸 AAA · BUY · $100K"), message.index("🔹 AAA · SELL · $200K"))
+        self.assertIn("　  2026-05-03   -33%@ $800\n\n---\n\n🔸 AAA", message)
+
+    def test_abbreviate_position_keeps_titles_short(self):
+        self.assertEqual(bot.abbreviate_position("President and CEO"), "CEO")
+        self.assertEqual(bot.abbreviate_position("Executive Vice President and CFO"), "CFO")
+        self.assertEqual(bot.abbreviate_position("Senior Vice President & CHRO"), "CHRO")
+        self.assertEqual(bot.abbreviate_position("Director"), "DIR")
+        self.assertEqual(bot.abbreviate_position("See Remarks"), "REM")
+        self.assertEqual(bot.abbreviate_position("Unknown Position"), "N/A")
+        self.assertEqual(bot.abbreviate_position("Chief Broadband, Ent. & Emerg"), "CBEE")
+        self.assertLessEqual(len(bot.abbreviate_position("Chief Broadband, Ent. & Emerg")), 5)
+        self.assertEqual(bot.display_position("Officer"), "高管")
+        self.assertEqual(bot.display_position("Director"), "董事")
+
+    def test_holding_change_percent_uses_owned_after_as_denominator(self):
+        buy = bot.AlertEntry("Buyer", "CEO", "BUY", 10000, 60.5, 605000, False, "2026-05-01", 25000)
+        new_buy = bot.AlertEntry("Buyer", "CEO", "BUY", 1000, 60.5, 605000, False, "2026-05-01", 1000)
+        sell = bot.AlertEntry("Seller", "Officer", "SELL", 170700, 39.31, 6700000, False, "2026-05-04", 1100000)
+        self.assertEqual(bot.format_holding_change_percent(buy), "+40%")
+        self.assertEqual(bot.format_holding_change_percent(new_buy), "NEW")
+        self.assertEqual(bot.format_holding_change_percent(sell), "-16%")
+
+    def test_compact_amount_and_price_formatting(self):
+        self.assertEqual(bot.format_amount(597_600), "$598K")
+        self.assertEqual(bot.format_amount(1_234_000), "$1.23M")
+        self.assertEqual(bot.format_amount(42_600_000), "$42.6M")
+        self.assertEqual(bot.format_price(39.61), "$39.61")
+        self.assertEqual(bot.format_price(196.18), "$196.2")
+        self.assertEqual(bot.format_price(771.44), "$771.4")
 
     def test_dingtalk_body_does_not_prepend_visible_title(self):
         original_post_json = bot.post_json
@@ -339,10 +392,8 @@ class StockInsiderBotTests(unittest.TestCase):
 
             bot.post_json = fake_post_json
             block = (
-                "🔹  PWR · SELL · $8.3M  \n"
-                "　　•  2026-05-05 · Austin Earl C. Jr.  \n"
-                "　　•  President and CEO  \n"
-                "　　•  10.7K @ $771.44 · 持仓 585.9K"
+                "🔹 PWR · SELL · $8.3M · CEO  \n"
+                "　  2026-05-05   -1.8%@ $771.4"
             )
             message = "\n\n---\n\n".join([block] * 8)
 

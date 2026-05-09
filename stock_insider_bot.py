@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -190,15 +191,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 0
 
-        log_debug(f"Debug mode enabled: {debug_enabled}")
-        log_debug(f"Tickers: {tickers_arg}")
-        log_debug(f"Threshold: {minimum_usd}")
-        log_debug(f"Lookback days: {max_lookback_days}")
-
         tickers = parse_tickers(tickers_arg)
         if not tickers:
             print("No valid tickers found in input.")
             return 0
+
+        log_debug(f"Debug mode enabled: {debug_enabled}")
+        log_debug(f"Tickers: {','.join(tickers)}")
+        log_debug(f"Threshold: {minimum_usd}")
+        log_debug(f"Lookback days: {max_lookback_days}")
 
         ticker_to_cik = download_ticker_mapping()
         if not ticker_to_cik:
@@ -385,7 +386,7 @@ def parse_bool(value: str | None, fallback: bool) -> bool:
 
 
 def parse_tickers(tickers_arg: str) -> list[str]:
-    return [ticker.strip().upper() for ticker in tickers_arg.split(",") if ticker.strip()]
+    return sorted(unique_tickers(ticker.strip().upper() for ticker in tickers_arg.split(",") if ticker.strip()))
 
 
 def discover_tickers_from_stock_list_files() -> tuple[list[str], str]:
@@ -960,18 +961,45 @@ def is_officer_or_director(reporting_owner: ET.Element) -> bool:
 def extract_position(reporting_owner: ET.Element) -> str:
     relationship = child(reporting_owner, "reportingOwnerRelationship")
     titles: list[str] = []
+    saw_remarks = False
     if relationship is not None:
         for field in ("officerTitle", "directorTitle", "otherTitle"):
             value = text_at(relationship, field)
             if value:
-                titles.append(value.strip())
+                title = value.strip()
+                if is_see_remarks(title):
+                    saw_remarks = True
+                else:
+                    titles.append(title)
         if titles:
             return ", ".join(titles)
+        if saw_remarks:
+            return infer_position_from_relationship(relationship) or "See Remarks"
     for path in ("relationshipTitle", "reportingOwnerId.rptOwnerTitle"):
         value = text_at(reporting_owner, path)
         if value:
-            return value
+            title = value.strip()
+            if is_see_remarks(title) and relationship is not None:
+                return infer_position_from_relationship(relationship) or "See Remarks"
+            return title
     return "Unknown Position"
+
+
+def is_see_remarks(value: str) -> bool:
+    return bool(re.search(r"\bsee remarks\b", value, re.IGNORECASE))
+
+
+def infer_position_from_relationship(relationship: ET.Element) -> str | None:
+    if relationship_flag(relationship, "isOfficer"):
+        return "Officer"
+    if relationship_flag(relationship, "isDirector"):
+        return "Director"
+    return None
+
+
+def relationship_flag(relationship: ET.Element, field: str) -> bool:
+    value = (text_at(relationship, field) or "").strip().lower()
+    return value in {"1", "true", "yes"}
 
 
 def process_transaction(
@@ -1174,26 +1202,23 @@ def max_buy_amount(alerts: list[AlertEntry]) -> float:
 
 def format_alert_block(ticker: str, entry: AlertEntry) -> list[str]:
     tx_date = entry.transaction_date or "N/A"
-    owner = compact_display_text(entry.owner_name)
-    position = compact_display_text(entry.position)
-    shares = format_number(entry.shares)
+    position = display_position(entry.position)
     amount = format_amount(entry.amount)
-    owned_after = format_number(entry.shares_owned_after) if entry.shares_owned_after > 0 else "N/A"
     plan = " · 10b5-1" if entry.is_10b5_1 else ""
+    percent = format_holding_change_percent(entry)
+    price = format_price(entry.price)
+    indent = "\u3000  "
+    detail = f"{indent}{tx_date}{plan}   {percent}@ {price}" if percent else f"{indent}{tx_date}{plan} @ {price}"
 
     if entry.kind == "BUY":
         return [
-            markdown_hard_break(f"🔸  {ticker} · BUY · {amount}"),
-            markdown_hard_break(f"　　•  {tx_date} · {owner}{plan}"),
-            markdown_hard_break(f"　　•  {position}"),
-            f"　　•  {shares} @ ${entry.price:,.2f} · 持仓 {owned_after}",
+            markdown_hard_break(f"🔸 {ticker} · BUY · {amount} · {position}"),
+            detail,
         ]
 
     return [
-        markdown_hard_break(f"🔹  {ticker} · SELL · {amount}"),
-        markdown_hard_break(f"　　•  {tx_date} · {owner}{plan}"),
-        markdown_hard_break(f"　　•  {position}"),
-        f"　　•  {shares} @ ${entry.price:,.2f} · 持仓 {owned_after}",
+        markdown_hard_break(f"🔹 {ticker} · SELL · {amount} · {position}"),
+        detail,
     ]
 
 
@@ -1206,6 +1231,90 @@ def compact_display_text(value: str) -> str:
     return compacted or "N/A"
 
 
+def display_position(position: str) -> str:
+    abbreviated = abbreviate_position(position)
+    if abbreviated == "OFF":
+        return "高管"
+    if abbreviated == "DIR":
+        return "董事"
+    return abbreviated
+
+
+def format_holding_change_percent(entry: AlertEntry) -> str:
+    if entry.shares <= 0:
+        return ""
+    if entry.kind == "BUY" and (entry.shares_owned_after <= 0 or entry.shares >= entry.shares_owned_after):
+        return "NEW"
+    if entry.shares_owned_after <= 0:
+        return ""
+    percent = entry.shares / entry.shares_owned_after * 100
+    sign = "+" if entry.kind == "BUY" else "-"
+    if percent < 10:
+        return f"{sign}{percent:.1f}%"
+    return f"{sign}{int(percent + 0.5)}%"
+
+
+def abbreviate_position(position: str) -> str:
+    text = compact_display_text(position)
+    if is_see_remarks(text):
+        return "REM"
+    if text == "N/A" or re.search(r"\b(unknown|not applicable|none)\b", text, re.IGNORECASE):
+        return "N/A"
+
+    normalized = text.upper()
+    role_patterns = [
+        ("CEO", r"\bCEO\b|CHIEF EXECUTIVE|PRESIDENT\s+(&|AND)\s+CEO"),
+        ("CFO", r"\bCFO\b|CHIEF FINANCIAL"),
+        ("COO", r"\bCOO\b|CHIEF OPERATING"),
+        ("CTO", r"\bCTO\b|CHIEF TECHNOLOGY"),
+        ("CIO", r"\bCIO\b|CHIEF INFORMATION|CHIEF INVESTMENT"),
+        ("CMO", r"\bCMO\b|CHIEF MARKETING"),
+        ("CLO", r"\bCLO\b|CHIEF LEGAL"),
+        ("CHRO", r"\bCHRO\b|CHIEF HUMAN|HUMAN RESOURCES"),
+        ("CAO", r"\bCAO\b|CHIEF ACCOUNTING|CHIEF ADMINISTRATIVE"),
+        ("CCO", r"\bCCO\b|CHIEF COMPLIANCE|CHIEF COMMERCIAL"),
+        ("CRO", r"\bCRO\b|CHIEF REVENUE|CHIEF RISK"),
+        ("CSO", r"\bCSO\b|CHIEF STRATEGY|CHIEF SCIENTIFIC"),
+        ("CDO", r"\bCDO\b|CHIEF DATA|CHIEF DIGITAL|CHIEF DEVELOPMENT"),
+        ("CPO", r"\bCPO\b|CHIEF PRODUCT|CHIEF PEOPLE"),
+        ("EVP", r"\bEVP\b|EXECUTIVE VICE PRESIDENT"),
+        ("SVP", r"\bSVP\b|SENIOR VICE PRESIDENT"),
+        ("VP", r"\bVP\b|VICE PRESIDENT"),
+        ("PRES", r"\bPRESIDENT\b"),
+        ("CHAIR", r"\bCHAIR(MAN|WOMAN)?\b"),
+        ("DIR", r"\bDIRECTOR\b"),
+        ("OFF", r"\bOFFICER\b"),
+    ]
+    for label, pattern in role_patterns:
+        if re.search(pattern, normalized):
+            return label[:5]
+
+    words = re.findall(r"[A-Z0-9]+", normalized)
+    stop_words = {
+        "A",
+        "AN",
+        "AND",
+        "AS",
+        "AT",
+        "CO",
+        "COMPANY",
+        "CORP",
+        "CORPORATE",
+        "INC",
+        "LLC",
+        "LP",
+        "LTD",
+        "OF",
+        "THE",
+    }
+    initials = "".join(word[0] for word in words if word not in stop_words)
+    if initials:
+        return initials[:5]
+
+    compacted = re.sub(r"[^A-Z0-9]", "", normalized)
+    return (compacted or "N/A")[:5]
+
+
 def format_number(num: int) -> str:
     if num >= 1_000_000:
         return f"{num / 1_000_000.0:.1f}M"
@@ -1215,11 +1324,30 @@ def format_number(num: int) -> str:
 
 
 def format_amount(amount: float) -> str:
-    if amount >= 1_000_000:
-        return f"${amount / 1_000_000.0:.1f}M"
-    if amount >= 1_000:
-        return f"${amount / 1_000.0:.1f}K"
-    return f"${amount:.0f}"
+    units = [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")]
+    for index, (scale, suffix) in enumerate(units):
+        if amount >= scale:
+            scaled = amount / scale
+            if scaled >= 999.5 and index > 0:
+                scale, suffix = units[index - 1]
+                scaled = amount / scale
+            return f"${format_significant(scaled, 3)}{suffix}"
+    return f"${format_significant(amount, 3)}"
+
+
+def format_price(price: float) -> str:
+    return f"${format_significant(price, 4)}"
+
+
+def format_significant(value: float, digits: int) -> str:
+    if value == 0:
+        return "0"
+    magnitude = math.floor(math.log10(abs(value)))
+    decimals = max(digits - magnitude - 1, 0)
+    rounded = round(value, decimals)
+    if decimals == 0:
+        return f"{rounded:.0f}"
+    return f"{rounded:.{decimals}f}".rstrip("0").rstrip(".")
 
 
 def build_missing_notification(tickers: list[str], reason: str) -> str:
