@@ -1243,12 +1243,18 @@ def display_position(position: str) -> str:
 def format_holding_change_percent(entry: AlertEntry) -> str:
     if entry.shares <= 0:
         return ""
-    if entry.kind == "BUY" and (entry.shares_owned_after <= 0 or entry.shares >= entry.shares_owned_after):
-        return "NEW"
-    if entry.shares_owned_after <= 0:
-        return ""
-    percent = entry.shares / entry.shares_owned_after * 100
-    sign = "+" if entry.kind == "BUY" else "-"
+    if entry.kind == "BUY":
+        shares_before = entry.shares_owned_after - entry.shares
+        if shares_before <= 0:
+            return "NEW"
+        percent = entry.shares / shares_before * 100
+        sign = "+"
+    else:
+        shares_before = entry.shares_owned_after + entry.shares
+        if shares_before <= 0:
+            return ""
+        percent = entry.shares / shares_before * 100
+        sign = "-"
     if percent < 10:
         return f"{sign}{percent:.1f}%"
     return f"{sign}{int(percent + 0.5)}%"

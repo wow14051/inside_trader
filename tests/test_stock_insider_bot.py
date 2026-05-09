@@ -301,7 +301,7 @@ class StockInsiderBotTests(unittest.TestCase):
         self.assertNotIn("Sells ·", message)
         self.assertNotIn("```diff", message)
         self.assertIn("🔸 MSFT · BUY · $605K · CEO  ", message)
-        self.assertIn("　  2026-05-01 · 10b5-1   +40%@ $60.5", message)
+        self.assertIn("　  2026-05-01 · 10b5-1   +67%@ $60.5", message)
         self.assertNotIn("买10.0K", message)
         self.assertNotIn("Jane Doe", message)
 
@@ -320,7 +320,7 @@ class StockInsiderBotTests(unittest.TestCase):
         message = bot.build_grouped_notification({"SE": [alert]}, "20260508")
         self.assertNotIn("Sells ·", message)
         self.assertIn("🔹 SE · SELL · $584K · COO  ", message)
-        self.assertIn("　  2026-05-04   -3.6%@ $85.9", message)
+        self.assertIn("　  2026-05-04   -3.4%@ $85.9", message)
         self.assertNotIn("卖6.8K", message)
         self.assertNotIn("Ye Gang", message)
 
@@ -336,7 +336,7 @@ class StockInsiderBotTests(unittest.TestCase):
         self.assertLess(message.index("🔸 BBB · BUY · $900K"), message.index("🔹 BBB · SELL · $800K"))
         self.assertLess(message.index("🔹 BBB · SELL · $800K"), message.index("🔸 AAA · BUY · $100K"))
         self.assertLess(message.index("🔸 AAA · BUY · $100K"), message.index("🔹 AAA · SELL · $200K"))
-        self.assertIn("　  2026-05-03   -33%@ $800\n\n---\n\n🔸 AAA", message)
+        self.assertIn("　  2026-05-03   -25%@ $800\n\n---\n\n🔸 AAA", message)
 
     def test_abbreviate_position_keeps_titles_short(self):
         self.assertEqual(bot.abbreviate_position("President and CEO"), "CEO")
@@ -354,13 +354,13 @@ class StockInsiderBotTests(unittest.TestCase):
         self.assertEqual(bot.display_position("Officer"), "高管")
         self.assertEqual(bot.display_position("Director"), "董事")
 
-    def test_holding_change_percent_uses_owned_after_as_denominator(self):
+    def test_holding_change_percent_uses_pre_trade_position_as_denominator(self):
         buy = bot.AlertEntry("Buyer", "CEO", "BUY", 10000, 60.5, 605000, False, "2026-05-01", 25000)
         new_buy = bot.AlertEntry("Buyer", "CEO", "BUY", 1000, 60.5, 605000, False, "2026-05-01", 1000)
         sell = bot.AlertEntry("Seller", "Officer", "SELL", 170700, 39.31, 6700000, False, "2026-05-04", 1100000)
-        self.assertEqual(bot.format_holding_change_percent(buy), "+40%")
+        self.assertEqual(bot.format_holding_change_percent(buy), "+67%")
         self.assertEqual(bot.format_holding_change_percent(new_buy), "NEW")
-        self.assertEqual(bot.format_holding_change_percent(sell), "-16%")
+        self.assertEqual(bot.format_holding_change_percent(sell), "-13%")
 
     def test_compact_amount_and_price_formatting(self):
         self.assertEqual(bot.format_amount(597_600), "$598K")
