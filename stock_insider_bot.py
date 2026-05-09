@@ -32,7 +32,7 @@ SEC_BASE = "https://www.sec.gov/Archives/"
 TICKER_URL = "https://www.sec.gov/include/ticker.txt"
 DEFAULT_SEC_USER_AGENT = "SEC4-Insider-Bot AdminContact@example.com"
 DEFAULT_SEC_CONTACT_EMAIL = "contact@example.com"
-DEFAULT_MINIMUM_USD = 500_000
+DEFAULT_MINIMUM_USD = 200_000
 DEFAULT_MAX_LOOKBACK_DAYS = 7
 DEFAULT_DEBUG = True
 HTTP_TIMEOUT = 30
@@ -1277,6 +1277,8 @@ def abbreviate_position(position: str) -> str:
         ("CSO", r"\bCSO\b|CHIEF STRATEGY|CHIEF SCIENTIFIC"),
         ("CDO", r"\bCDO\b|CHIEF DATA|CHIEF DIGITAL|CHIEF DEVELOPMENT"),
         ("CPO", r"\bCPO\b|CHIEF PRODUCT|CHIEF PEOPLE"),
+        ("GP", r"\bGROUP PRESIDENT\b"),
+        ("COCH", r"\bCO-?CHAIR(MAN|WOMAN)?\b"),
         ("EVP", r"\bEVP\b|EXECUTIVE VICE PRESIDENT"),
         ("SVP", r"\bSVP\b|SENIOR VICE PRESIDENT"),
         ("VP", r"\bVP\b|VICE PRESIDENT"),
@@ -1519,7 +1521,7 @@ def current_dingtalk_segment_timestamp() -> str:
 def format_dingtalk_segment(
     message: str, timestamp: str, segment_index: int = 1, segment_total: int = 1
 ) -> str:
-    segment_label = f"  ({segment_index}/{segment_total})"
+    segment_label = f"  ({segment_index}/{segment_total})" if segment_total > 1 else ""
     return f"---\n---\n# ⏰{segment_label}\n# {timestamp}\n---\n\n{message.strip()}"
 
 

@@ -10,7 +10,7 @@
 - 默认检查最近 7 天，可通过参数或环境变量修改。
 - 只保留 officer/director 相关披露。
 - 只提醒真实买入 `P` 和卖出 `S`，跳过授予、行权等非买卖交易。
-- 按交易金额阈值过滤，默认 `500000` 美元。
+- 按交易金额阈值过滤，默认 `200000` 美元。
 - 优先使用 SEC daily master index，找不到时自动 fallback 到 browse-edgar。
 - 并行下载 SEC index 和 Form 4 文件，减少运行时间。
 - 支持钉钉加签 Webhook。
@@ -28,7 +28,7 @@
 
 也就是说，旧版 Discord Webhook 支持仍然保留。只要设置 `DISCORD_WEBHOOK_URL`，并且没有设置 `DING_WEBHOOK_URL`，就会走 Discord。
 
-钉钉机器人单次请求有 body 大小限制。提醒内容较多时，程序会在接近限制前自动分段发送，尽量按股票和交易块拆分，避免漏掉后面的提醒。每个钉钉分段开头都会先加两条分割线，再加醒目的 `# ⏰`、一级标题格式的当前时间和分割线，并始终显示类似 `(1/1)` 或 `(1/3)` 的段落序号，方便在连续消息里识别新一段内容。
+钉钉机器人单次请求有 body 大小限制。提醒内容较多时，程序会在接近限制前自动分段发送，尽量按股票和交易块拆分，避免漏掉后面的提醒。每个钉钉分段开头都会先加两条分割线，再加醒目的 `# ⏰`、一级标题格式的当前时间和分割线；只有拆成多段时才显示类似 `(1/3)` 的段落序号，方便在连续消息里识别新一段内容。
 
 钉钉加签机器人需要同时配置：
 
@@ -65,7 +65,7 @@ SEC_CONTACT_EMAIL      可选，SEC From header 邮箱
 
 ```text
 TICKERS          股票代码列表，例如 AAPL,GOOGL,MSFT
-THRESHOLD_USD    最小交易金额，例如 500000
+THRESHOLD_USD    最小交易金额，例如 200000
 LOOKBACK_DAYS    回看天数，例如 7
 ```
 
@@ -109,13 +109,13 @@ python -m pip install -e .
 直接传入股票代码：
 
 ```bash
-python stock_insider_bot.py "AAPL,GOOGL,MSFT" --threshold=500000 --lookback=7
+python stock_insider_bot.py "AAPL,GOOGL,MSFT" --threshold=200000 --lookback=7
 ```
 
 也可以使用显式参数：
 
 ```bash
-python stock_insider_bot.py --tickers=AAPL,GOOGL,MSFT --threshold=500000 --lookback=7
+python stock_insider_bot.py --tickers=AAPL,GOOGL,MSFT --threshold=200000 --lookback=7
 ```
 
 指定某个股票列表文件：
@@ -128,7 +128,7 @@ PowerShell 环境变量示例：
 
 ```powershell
 $env:TICKERS="AAPL,GOOGL,MSFT"
-$env:THRESHOLD_USD="500000"
+$env:THRESHOLD_USD="200000"
 $env:LOOKBACK_DAYS="7"
 $env:DING_WEBHOOK_URL="https://oapi.dingtalk.com/robot/send?access_token=..."
 $env:DING_WEBHOOK_SIGN="SEC..."
@@ -161,7 +161,7 @@ python stock_insider_bot.py "AAPL,MSFT"
 金额阈值来源优先级：
 
 ```text
---threshold 参数 -> THRESHOLD_USD 环境变量 -> 默认 500000
+--threshold 参数 -> THRESHOLD_USD 环境变量 -> 默认 200000
 ```
 
 回看天数来源优先级：
@@ -239,7 +239,27 @@ EBK 示例：
 1. `BUY` 在前，`SELL` 在后。
 2. 同类交易按金额从大到小排序。
 
-买入和卖出会使用彩色菱形标记区分：`🔸 BUY` 表示买入，`🔹 SELL` 表示卖出。每条提醒使用两行短格式；明细会省略交易人姓名，职位会放在标题末尾。`CEO`、`CFO`、`COO`、`EVP`、`SVP` 等明确职位保留英文简称，`OFF` 显示为 `高管`，`DIR` 显示为 `董事`，没有职位时显示 `N/A`。标题里的交易金额最多保留 3 个有效数字，例如 `$597.6K` 会显示为 `$598K`；日期行会显示本次交易数量占当前持仓的比例和成交价，价格最多保留 4 个有效数字。买入比例为正，卖出比例为负，分母使用 SEC 披露的交易后持仓；如果是新建仓，没有可用比例时显示 `NEW`。遇到 `See Remarks` 时，会优先根据 SEC 的 `isOfficer` / `isDirector` 字段推断为 `高管` 或 `董事`，推断不了才显示 `REM`。日期行开头使用全角空格保留缩进，避免钉钉把普通行首空格吞掉。Discord 和钉钉都支持 Markdown 的一部分，但它们的 Webhook Markdown 都不支持任意字体颜色，所以不能像 HTML 一样指定蓝色或红色字体。
+买入和卖出会使用彩色菱形标记区分：`🔸 BUY` 表示买入，`🔹 SELL` 表示卖出。每条提醒使用两行短格式；明细会省略交易人姓名，职位会放在标题末尾。`CEO`、`CFO`、`COO`、`EVP`、`SVP` 等明确职位保留英文简称；`Group President` 显示为 `GP`，`Co-Chairman` 显示为 `COCH`，`Chairman` 显示为 `CHAIR`，`President` 显示为 `PRES`；`OFF` 显示为 `高管`，`DIR` 显示为 `董事`，没有职位时显示 `N/A`。标题里的交易金额最多保留 3 个有效数字，例如 `$597.6K` 会显示为 `$598K`；日期行会显示本次交易数量占当前持仓的比例和成交价，价格最多保留 4 个有效数字。买入比例为正，卖出比例为负，分母使用 SEC 披露的交易后持仓；如果是新建仓，没有可用比例时显示 `NEW`。遇到 `See Remarks` 时，会优先根据 SEC 的 `isOfficer` / `isDirector` 字段推断为 `高管` 或 `董事`，推断不了才显示 `REM`。日期行开头使用全角空格保留缩进，避免钉钉把普通行首空格吞掉。Discord 和钉钉都支持 Markdown 的一部分，但它们的 Webhook Markdown 都不支持任意字体颜色，所以不能像 HTML 一样指定蓝色或红色字体。
+
+岗位显示规则：
+
+| SEC 原始职位内容 | 提醒中显示 |
+| --- | --- |
+| `Chief Executive Officer` / `CEO` / `President and CEO` | `CEO` |
+| `Chief Financial Officer` / `CFO` | `CFO` |
+| `Chief Operating Officer` / `COO` | `COO` |
+| `Chief Technology Officer` / `CTO` | `CTO` |
+| `Executive Vice President` / `EVP` | `EVP` |
+| `Senior Vice President` / `SVP` | `SVP` |
+| `Vice President` / `VP` | `VP` |
+| `Group President` | `GP` |
+| `Co-Chairman` / `Co-Chairwoman` / `Co-Chair` | `COCH` |
+| `Chairman` / `Chairwoman` / `Chair` | `CHAIR` |
+| `President` | `PRES` |
+| `Director` | `董事` |
+| `Officer` | `高管` |
+| `See Remarks` | 优先根据 `isOfficer` / `isDirector` 推断为 `高管` 或 `董事`，否则显示 `REM` |
+| 空职位 / `Unknown Position` | `N/A` |
 
 示例：
 

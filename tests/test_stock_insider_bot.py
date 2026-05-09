@@ -342,6 +342,10 @@ class StockInsiderBotTests(unittest.TestCase):
         self.assertEqual(bot.abbreviate_position("President and CEO"), "CEO")
         self.assertEqual(bot.abbreviate_position("Executive Vice President and CFO"), "CFO")
         self.assertEqual(bot.abbreviate_position("Senior Vice President & CHRO"), "CHRO")
+        self.assertEqual(bot.abbreviate_position("Group President"), "GP")
+        self.assertEqual(bot.abbreviate_position("Co-Chairman"), "COCH")
+        self.assertEqual(bot.abbreviate_position("Chairman"), "CHAIR")
+        self.assertEqual(bot.abbreviate_position("President"), "PRES")
         self.assertEqual(bot.abbreviate_position("Director"), "DIR")
         self.assertEqual(bot.abbreviate_position("See Remarks"), "REM")
         self.assertEqual(bot.abbreviate_position("Unknown Position"), "N/A")
@@ -377,7 +381,7 @@ class StockInsiderBotTests(unittest.TestCase):
             bot.post_json = fake_post_json
             self.assertTrue(bot.send_dingtalk_webhook("https://example.test/webhook", None, "Insider Alert", "**AAPL**"))
             self.assertIn("**AAPL**", captured["payload"]["markdown"]["text"])
-            self.assertTrue(captured["payload"]["markdown"]["text"].startswith("---\n---\n# ⏰  (1/1)\n# "))
+            self.assertTrue(captured["payload"]["markdown"]["text"].startswith("---\n---\n# ⏰\n# "))
             self.assertIn("\n---\n\n", captured["payload"]["markdown"]["text"])
         finally:
             bot.post_json = original_post_json
