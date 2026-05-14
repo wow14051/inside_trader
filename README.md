@@ -61,7 +61,7 @@ SEC_USER_AGENT         可选，SEC User-Agent
 SEC_CONTACT_EMAIL      可选，SEC From header 邮箱
 ```
 
-当前 workflow 默认使用仓库里的 `美股.ebk` 股票列表，并在北京时间每天 15:00 自动运行一次。GitHub Actions 的 cron 使用 UTC，所以 workflow 中对应写成 `0 7 * * *`。定时任务默认使用最小交易金额 `40000` 美元、回看 `4` 天。
+当前 workflow 默认使用仓库里的 `美股.ebk` 股票列表，并在北京时间每天 14:00 自动运行一次。GitHub Actions 的 cron 使用 UTC，所以 workflow 中对应写成 `0 6 * * *`。定时任务默认使用最小交易金额 `40000` 美元、回看 `4` 天。
 
 当前 workflow 也支持手动运行。打开 GitHub Actions，选择 `Daily Insider Check`，点击 `Run workflow`，可以临时填写：
 
