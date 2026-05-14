@@ -7,10 +7,10 @@
 ## 核心功能
 
 - 查询 SEC EDGAR Form 4 内部人交易披露。
-- 默认检查最近 3 天，可通过参数或环境变量修改。
+- 默认检查最近 4 天，可通过参数或环境变量修改。
 - 只保留 officer/director 相关披露。
 - 只提醒真实买入 `P` 和卖出 `S`，跳过授予、行权等非买卖交易。
-- 按交易金额阈值过滤，默认 `200000` 美元。
+- 按交易金额阈值过滤，默认 `40000` 美元。
 - 优先使用 SEC daily master index，找不到时自动 fallback 到 browse-edgar。
 - 并行下载 SEC index 和 Form 4 文件，减少运行时间。
 - 支持钉钉加签 Webhook。
@@ -61,25 +61,17 @@ SEC_USER_AGENT         可选，SEC User-Agent
 SEC_CONTACT_EMAIL      可选，SEC From header 邮箱
 ```
 
-建议添加以下 Variables：
-
-```text
-THRESHOLD_USD    最小交易金额，例如 200000
-LOOKBACK_DAYS    回看天数，例如 3
-```
-
-当前 workflow 默认使用仓库里的 `美股.ebk` 股票列表，并在北京时间每天 15:00 自动运行一次。GitHub Actions 的 cron 使用 UTC，所以 workflow 中对应写成 `0 7 * * *`。
+当前 workflow 默认使用仓库里的 `美股.ebk` 股票列表，并在北京时间每天 15:00 自动运行一次。GitHub Actions 的 cron 使用 UTC，所以 workflow 中对应写成 `0 7 * * *`。定时任务默认使用最小交易金额 `40000` 美元、回看 `4` 天。
 
 当前 workflow 也支持手动运行。打开 GitHub Actions，选择 `Daily Insider Check`，点击 `Run workflow`，可以临时填写：
 
 ```text
-stock_list   仓库中的股票列表文件名，默认 美股
-tickers      可选，临时覆盖股票列表的股票代码
-threshold    最小交易金额，默认 200000
-lookback     回看天数，默认 3
+tickers      可选，临时覆盖股票列表的股票代码；留空使用 美股.ebk
+threshold    最小交易金额；留空默认 40000
+lookback     回看天数；留空默认 4
 ```
 
-手动输入会覆盖 workflow 里的默认值。
+手动输入会覆盖 workflow 里的默认值。每次运行会在 Actions 日志里打印本次实际使用的 `THRESHOLD_USD` 和 `LOOKBACK_DAYS`。
 
 ## 本地运行
 
@@ -111,28 +103,28 @@ python -m pip install -e .
 直接传入股票代码：
 
 ```bash
-python stock_insider_bot.py "AAPL,GOOGL,MSFT" --threshold=200000 --lookback=3
+python stock_insider_bot.py "AAPL,GOOGL,MSFT" --threshold=40000 --lookback=4
 ```
 
 也可以使用显式参数：
 
 ```bash
-python stock_insider_bot.py --tickers=AAPL,GOOGL,MSFT --threshold=200000 --lookback=3
+python stock_insider_bot.py --tickers=AAPL,GOOGL,MSFT --threshold=40000 --lookback=4
 ```
 
 指定某个股票列表文件：
 
 ```bash
-python stock_insider_bot.py --stock-list=stocklist --lookback=3
-python stock_insider_bot.py --stock-list=美股 --lookback=3
+python stock_insider_bot.py --stock-list=stocklist --lookback=4
+python stock_insider_bot.py --stock-list=美股 --lookback=4
 ```
 
 PowerShell 环境变量示例：
 
 ```powershell
 $env:TICKERS="AAPL,GOOGL,MSFT"
-$env:THRESHOLD_USD="200000"
-$env:LOOKBACK_DAYS="3"
+$env:THRESHOLD_USD="40000"
+$env:LOOKBACK_DAYS="4"
 $env:DING_WEBHOOK_URL="https://oapi.dingtalk.com/robot/send?access_token=..."
 $env:DING_WEBHOOK_SIGN="SEC..."
 python stock_insider_bot.py
@@ -164,13 +156,13 @@ python stock_insider_bot.py "AAPL,MSFT"
 金额阈值来源优先级：
 
 ```text
---threshold 参数 -> THRESHOLD_USD 环境变量 -> 默认 200000
+--threshold 参数 -> THRESHOLD_USD 环境变量 -> 默认 40000
 ```
 
 回看天数来源优先级：
 
 ```text
---lookback 参数 -> LOOKBACK_DAYS 环境变量 -> 默认 3
+--lookback 参数 -> LOOKBACK_DAYS 环境变量 -> 默认 4
 ```
 
 调试日志来源优先级：

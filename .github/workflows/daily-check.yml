@@ -7,25 +7,20 @@ on:
 
   workflow_dispatch:
     inputs:
-      stock_list:
-        description: "Stock list file name in the repository"
-        required: false
-        default: "美股"
-
       tickers:
-        description: "Optional comma-separated ticker override"
+        description: "Comma-separated tickers; leave blank to use the default stock list"
         required: false
         default: ""
 
       threshold:
-        description: "Minimum trade size in USD"
+        description: "Minimum trade size in USD; leave blank to use 40000"
         required: false
-        default: "200000"
+        default: ""
 
       lookback:
-        description: "Days to search back for a valid SEC master index"
+        description: "Days to look back; leave blank to use 4"
         required: false
-        default: "3"
+        default: ""
 
 env:
   DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
@@ -34,13 +29,13 @@ env:
   SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
   SEC_CONTACT_EMAIL: ${{ secrets.SEC_CONTACT_EMAIL }}
 
-  STOCK_LIST: ${{ github.event.inputs.stock_list || '美股' }}
+  STOCK_LIST: "美股"
 
   TICKERS: ${{ github.event.inputs.tickers || '' }}
 
-  THRESHOLD_USD: ${{ github.event.inputs.threshold || '200000' }}
+  THRESHOLD_USD: ${{ github.event.inputs.threshold || '40000' }}
 
-  LOOKBACK_DAYS: ${{ github.event.inputs.lookback || '3' }}
+  LOOKBACK_DAYS: ${{ github.event.inputs.lookback || '4' }}
 
 jobs:
   check:
@@ -57,6 +52,13 @@ jobs:
 
       - name: Run tests
         run: python -m unittest discover -v
+
+      - name: Show run parameters
+        run: |
+          echo "STOCK_LIST=${STOCK_LIST}"
+          echo "TICKERS=${TICKERS}"
+          echo "THRESHOLD_USD=${THRESHOLD_USD}"
+          echo "LOOKBACK_DAYS=${LOOKBACK_DAYS}"
 
       - name: Run bot
         run: |

@@ -100,8 +100,9 @@ class StockInsiderBotTests(unittest.TestCase):
         )
         self.assertEqual(bot.expand_short_cli_args(["AAPL,MSFT"]), ["AAPL,MSFT"])
 
-    def test_default_lookback_is_three_days(self):
-        self.assertEqual(bot.DEFAULT_MAX_LOOKBACK_DAYS, 3)
+    def test_default_threshold_and_lookback(self):
+        self.assertEqual(bot.DEFAULT_MINIMUM_USD, 40_000)
+        self.assertEqual(bot.DEFAULT_MAX_LOOKBACK_DAYS, 4)
 
     def test_ticker_lookup_normalizes_like_java(self):
         mapping = {"BRK-B": "1067983", "MSFT": "0000789019"}
