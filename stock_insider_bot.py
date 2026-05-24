@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import concurrent.futures
 import csv
 import hashlib
 import hmac
@@ -36,8 +35,6 @@ DEFAULT_MINIMUM_USD = 40_000
 DEFAULT_MAX_LOOKBACK_DAYS = 4
 DEFAULT_DEBUG = True
 HTTP_TIMEOUT = 30
-DEFAULT_INDEX_WORKERS = 4
-DEFAULT_FORM4_WORKERS = 8
 DINGTALK_MAX_BODY_BYTES = 20_000
 DINGTALK_SAFE_BODY_BYTES = DINGTALK_MAX_BODY_BYTES - 2_000
 DESKTOP_TICKER_EXTENSIONS = {".ebk", ".txt", ".csv"}
@@ -133,6 +130,12 @@ class AlertEntry:
     is_10b5_1: bool
     transaction_date: str
     shares_owned_after: int
+    buy_amount: float = 0.0
+    sell_amount: float = 0.0
+    net_amount: float = 0.0
+    buy_shares: int = 0
+    sell_shares: int = 0
+    net_shares: int = 0
 
 
 @dataclass
@@ -254,10 +257,11 @@ def main(argv: list[str] | None = None) -> int:
         if processed_count == 0 and failed_count > 0:
             raise RuntimeError(f"Failed to process any of the {failed_count} Form 4 filings found.")
 
+        aggregated_alerts = aggregate_alerts(all_alerts, minimum_usd)
         filtered_alerts = {
-            ticker: all_alerts[ticker]
+            ticker: aggregated_alerts[ticker]
             for ticker in tickers
-            if ticker in all_alerts and all_alerts[ticker]
+            if ticker in aggregated_alerts and aggregated_alerts[ticker]
         }
 
         if not filtered_alerts:
@@ -720,32 +724,26 @@ def find_cik_for_ticker(ticker: str, ticker_to_cik: dict[str, str]) -> str | Non
 
 
 def find_master_index(start_date: date, max_lookback_days: int) -> MasterIndex | None:
-    candidates: list[tuple[int, date, str]] = []
-    for offset in range(max_lookback_days):
-        current = start_date - timedelta(days=offset)
-        candidates.append((offset, current, master_index_url(current)))
-    if not candidates:
+    if max_lookback_days <= 0:
         return None
 
-    def fetch(candidate: tuple[int, date, str]) -> tuple[int, date, str] | None:
-        offset, current, url = candidate
+    content_parts: list[str] = []
+    found_date: date | None = None
+    for offset in range(max_lookback_days):
+        current = start_date - timedelta(days=offset)
+        url = master_index_url(current)
         try:
             content = download_text(url)
             if content.strip():
                 log_debug(f"Using SEC index: {url}")
-                return offset, current, content
+                content_parts.append(content)
+                if found_date is None:
+                    found_date = current
         except Exception:
             pass
-        return None
 
-    max_workers = min(len(candidates), env_int("INDEX_WORKERS", DEFAULT_INDEX_WORKERS))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = [result for result in executor.map(fetch, candidates) if result]
-
-    if results:
-        results.sort(key=lambda item: item[0])
-        found_date = results[0][1]
-        return MasterIndex(found_date.strftime("%Y%m%d"), "".join(item[2] for item in results))
+    if content_parts and found_date is not None:
+        return MasterIndex(found_date.strftime("%Y%m%d"), "".join(content_parts))
     return None
 
 
@@ -907,7 +905,7 @@ def parse_form4(
             log_debug(f"No {tx_name} for {ticker}")
             continue
         for transaction in transactions:
-            entry = process_transaction(transaction, owner_name, position, minimum_usd)
+            entry = process_transaction(transaction, owner_name, position, doc, minimum_usd)
             if entry:
                 alerts.setdefault(ticker, []).append(entry)
 
@@ -926,27 +924,78 @@ def process_form4_urls(
     if not form4_urls:
         return all_alerts, processed_count, failed_count
 
-    def process(url: str) -> tuple[str, dict[str, list[AlertEntry]] | None, Exception | None]:
+    for url in form4_urls:
         try:
             xml = download_text(url)
             log_debug(f"Processing Form 4 URL: {url}")
-            return url, parse_form4(xml, minimum_usd, cik_to_requested_ticker), None
-        except Exception as exc:
-            return url, None, exc
-
-    max_workers = min(len(form4_urls), env_int("FORM4_WORKERS", DEFAULT_FORM4_WORKERS))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for url, parsed, error in executor.map(process, form4_urls):
-            if error:
-                failed_count += 1
-                print(f"Warning: failed to process Form 4 at {url} - {error}", file=sys.stderr)
-                continue
+            parsed = parse_form4(xml, minimum_usd, cik_to_requested_ticker)
             processed_count += 1
             for ticker, alerts in (parsed or {}).items():
                 if alerts:
                     all_alerts.setdefault(ticker, []).extend(alerts)
+        except Exception as exc:
+            failed_count += 1
+            print(f"Warning: failed to process Form 4 at {url} - {exc}", file=sys.stderr)
 
     return all_alerts, processed_count, failed_count
+
+
+def aggregate_alerts(
+    raw_alerts: dict[str, list[AlertEntry]], threshold: int
+) -> dict[str, list[AlertEntry]]:
+    result: dict[str, list[AlertEntry]] = {}
+    for ticker, entries in raw_alerts.items():
+        grouped: dict[str, dict[str, list[AlertEntry]]] = {}
+        for entry in entries:
+            grouped.setdefault(entry.transaction_date, {}).setdefault(entry.owner_name, []).append(entry)
+
+        aggregated_entries: list[AlertEntry] = []
+        for transaction_date, owner_map in grouped.items():
+            for owner_name, trades in owner_map.items():
+                total_buy_amount = sum(trade.buy_amount for trade in trades)
+                total_sell_amount = sum(trade.sell_amount for trade in trades)
+                total_buy_shares = sum(trade.buy_shares for trade in trades)
+                total_sell_shares = sum(trade.sell_shares for trade in trades)
+                position = trades[0].position
+                last_owned_after = trades[-1].shares_owned_after
+                all_plan = all(trade.is_10b5_1 for trade in trades)
+                total_amount = total_buy_amount + total_sell_amount
+                if total_amount < threshold:
+                    continue
+
+                net_amount = total_buy_amount - total_sell_amount
+                net_shares = total_buy_shares - total_sell_shares
+                kind = "BUY" if net_amount > 0 else "SELL"
+                if net_amount > 0:
+                    display_shares = total_buy_shares
+                    display_price = total_buy_amount / total_buy_shares if total_buy_shares > 0 else 0.0
+                else:
+                    display_shares = total_sell_shares
+                    display_price = total_sell_amount / total_sell_shares if total_sell_shares > 0 else 0.0
+
+                aggregated_entries.append(
+                    AlertEntry(
+                        owner_name=owner_name,
+                        position=position,
+                        kind=kind,
+                        shares=display_shares,
+                        price=display_price,
+                        amount=total_amount,
+                        is_10b5_1=all_plan,
+                        transaction_date=transaction_date,
+                        shares_owned_after=last_owned_after,
+                        buy_amount=total_buy_amount,
+                        sell_amount=total_sell_amount,
+                        net_amount=net_amount,
+                        buy_shares=total_buy_shares,
+                        sell_shares=total_sell_shares,
+                        net_shares=net_shares,
+                    )
+                )
+
+        if aggregated_entries:
+            result[ticker] = aggregated_entries
+    return result
 
 
 def is_officer_or_director(reporting_owner: ET.Element) -> bool:
@@ -1002,10 +1051,87 @@ def relationship_flag(relationship: ET.Element, field: str) -> bool:
     return value in {"1", "true", "yes"}
 
 
+def is_truthy_text(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes"}
+
+
+def is_sell_to_cover(transaction: ET.Element, doc_root: ET.Element | None) -> bool:
+    for path in ("footnote", "footnotes", "remarks", "transactionText", "explanatoryText"):
+        if contains_sell_to_cover_text(node_text(node_at(transaction, path))):
+            return True
+
+    referenced_ids = collect_footnote_ids(transaction)
+    if not referenced_ids or doc_root is None:
+        return False
+
+    footnotes = find_footnotes_container(doc_root)
+    if footnotes is None:
+        return False
+
+    for footnote in children(footnotes, "footnote"):
+        footnote_id = footnote.get("id") or footnote.get("_id") or text_at(footnote, "id")
+        if not footnote_id or footnote_id not in referenced_ids:
+            continue
+        if contains_sell_to_cover_text(node_text(footnote)):
+            return True
+    return False
+
+
+def contains_sell_to_cover_text(raw: str) -> bool:
+    text = raw.lower()
+    return (
+        "sell to cover" in text
+        or "sell-to-cover" in text
+        or "tax withholding" in text
+        or "satisfy tax" in text
+        or "satisfy withholding" in text
+        or "withhold" in text
+        or "tax obligation" in text
+        or "net settlement" in text
+        or ("rsu" in text and ("tax" in text or "vest" in text))
+    )
+
+
+def find_footnotes_container(doc_root: ET.Element | None) -> ET.Element | None:
+    if doc_root is None:
+        return None
+    for candidate in (doc_root, child(doc_root, "ownershipDocument")):
+        if candidate is None:
+            continue
+        footnotes = child(candidate, "footnotes")
+        if footnotes is not None:
+            return footnotes
+    return None
+
+
+def collect_footnote_ids(node: ET.Element | None) -> set[str]:
+    ids: set[str] = set()
+
+    def walk(current: ET.Element | None) -> None:
+        if current is None:
+            return
+        if local_name(current.tag) == "footnoteId":
+            candidate = current.get("id") or current.get("_id") or direct_text(current)
+            if candidate:
+                ids.add(candidate.strip())
+        for child_node in list(current):
+            walk(child_node)
+
+    walk(node)
+    return ids
+
+
+def node_text(node: ET.Element | None) -> str:
+    if node is None:
+        return ""
+    return "".join(node.itertext()).strip()
+
+
 def process_transaction(
     transaction: ET.Element,
     owner_name: str,
     position: str,
+    doc_root: ET.Element | None,
     minimum_usd: int,
 ) -> AlertEntry | None:
     code = text_at(transaction, "transactionCoding.transactionCode") or ""
@@ -1019,6 +1145,10 @@ def process_transaction(
         log_debug(f"Skipping transaction: code={code} has exerciseDate={exercise_date}")
         return None
 
+    if is_sell_to_cover(transaction, doc_root):
+        log_debug(f"Skipping transaction: code={code} marked as sell-to-cover")
+        return None
+
     shares = extract_int(transaction, "transactionAmounts.transactionShares")
     price = extract_float(transaction, "transactionAmounts.transactionPricePerShare")
     if shares <= 0 or price <= 0:
@@ -1026,12 +1156,9 @@ def process_transaction(
         return None
 
     amount = shares * price
-    if amount < minimum_usd:
-        log_debug(f"Skipping transaction: code={code} amount={amount} < threshold={minimum_usd}")
-        return None
 
     kind = "BUY" if code == "P" else "SELL"
-    is_10b5_1 = (text_at(transaction, "transactionCoding.is10b51Transaction") or "").lower() == "true"
+    is_10b5_1 = is_truthy_text(text_at(transaction, "transactionCoding.is10b51Transaction"))
     transaction_date = extract_text(transaction, "transactionDate", "")
     if len(transaction_date) >= 10:
         transaction_date = transaction_date[:10]
@@ -1041,6 +1168,13 @@ def process_transaction(
     )
     if shares_owned_after <= 0:
         shares_owned_after = extract_int(transaction, "sharesOwnedFollowingTransaction")
+
+    buy_amount = amount if kind == "BUY" else 0.0
+    sell_amount = amount if kind == "SELL" else 0.0
+    buy_shares = shares if kind == "BUY" else 0
+    sell_shares = shares if kind == "SELL" else 0
+    net_amount = buy_amount - sell_amount
+    net_shares = buy_shares - sell_shares
 
     log_debug(
         f"Creating alert: {owner_name} {kind} {shares} shares at {price} "
@@ -1056,6 +1190,12 @@ def process_transaction(
         is_10b5_1,
         transaction_date,
         shares_owned_after,
+        buy_amount,
+        sell_amount,
+        net_amount,
+        buy_shares,
+        sell_shares,
+        net_shares,
     )
 
 
@@ -1241,19 +1381,25 @@ def display_position(position: str) -> str:
 
 
 def format_holding_change_percent(entry: AlertEntry) -> str:
-    if entry.shares <= 0:
-        return ""
+    if entry.buy_shares or entry.sell_shares:
+        net_shares = entry.net_shares
+        if net_shares == 0:
+            return ""
+    else:
+        if entry.shares <= 0:
+            return ""
+        net_shares = entry.shares if entry.kind == "BUY" else -entry.shares
     if entry.kind == "BUY":
-        shares_before = entry.shares_owned_after - entry.shares
+        shares_before = entry.shares_owned_after - net_shares
         if shares_before <= 0:
             return "NEW"
-        percent = entry.shares / shares_before * 100
+        percent = abs(net_shares) / shares_before * 100
         sign = "+"
     else:
-        shares_before = entry.shares_owned_after + entry.shares
+        shares_before = entry.shares_owned_after - net_shares
         if shares_before <= 0:
             return ""
-        percent = entry.shares / shares_before * 100
+        percent = abs(net_shares) / shares_before * 100
         sign = "-"
     if percent < 10:
         return f"{sign}{percent:.1f}%"

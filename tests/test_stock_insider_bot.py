@@ -249,11 +249,28 @@ class StockInsiderBotTests(unittest.TestCase):
         urls = bot.parse_master_idx(content, {"789019"})
         self.assertEqual(urls, [f"{bot.SEC_BASE}edgar/data/789019/a.txt"])
 
+    def test_find_master_index_downloads_dates_sequentially(self):
+        original_download_text = bot.download_text
+        requested = []
+        try:
+            def fake_download_text(url):
+                requested.append(url)
+                return "CIK|Company Name|Form Type|Date Filed|Filename\n" if url.endswith("20260503.idx") else ""
+
+            bot.download_text = fake_download_text
+            master = bot.find_master_index(bot.date(2026, 5, 5), 3)
+            self.assertIsNotNone(master)
+            self.assertTrue(requested[0].endswith("master.20260505.idx"))
+            self.assertTrue(requested[1].endswith("master.20260504.idx"))
+            self.assertTrue(requested[2].endswith("master.20260503.idx"))
+        finally:
+            bot.download_text = original_download_text
+
     def test_parse_form4_extracts_large_purchase_only(self):
         parsed = bot.parse_form4(FORM4_XML, 500_000, {"789019": "MSFT"})
         self.assertEqual(list(parsed), ["MSFT"])
         alerts = parsed["MSFT"]
-        self.assertEqual(len(alerts), 1)
+        self.assertEqual(len(alerts), 2)
         alert = alerts[0]
         self.assertEqual(alert.owner_name, "Jane Doe")
         self.assertEqual(alert.position, "CEO")
@@ -264,6 +281,194 @@ class StockInsiderBotTests(unittest.TestCase):
         self.assertTrue(alert.is_10b5_1)
         self.assertEqual(alert.transaction_date, "2026-05-01")
         self.assertEqual(alert.shares_owned_after, 25000)
+
+    def test_parse_form4_treats_10b5_1_value_1_as_true(self):
+        xml = FORM4_XML.replace(
+            "<is10b51Transaction>true</is10b51Transaction>",
+            "<is10b51Transaction>1</is10b51Transaction>",
+        )
+        alert = bot.parse_form4(xml, 500_000, {"789019": "MSFT"})["MSFT"][0]
+        self.assertTrue(alert.is_10b5_1)
+
+    def test_aggregate_alerts_combines_same_owner_same_date_before_threshold(self):
+        xml = FORM4_XML.replace(
+            """
+    <nonDerivativeTransaction>
+      <securityTitle><value>Common Stock</value></securityTitle>
+      <transactionDate><value>2026-05-01</value></transactionDate>
+      <transactionCoding>
+        <transactionCode>P</transactionCode>
+        <is10b51Transaction>true</is10b51Transaction>
+      </transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>10000</value></transactionShares>
+        <transactionPricePerShare><value>60.50</value></transactionPricePerShare>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction><value>25000</value></sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+    </nonDerivativeTransaction>
+""",
+            """
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-05-01</value></transactionDate>
+      <transactionCoding>
+        <transactionCode>P</transactionCode>
+        <is10b51Transaction>1</is10b51Transaction>
+      </transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>3000</value></transactionShares>
+        <transactionPricePerShare><value>100</value></transactionPricePerShare>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction><value>13000</value></sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+    </nonDerivativeTransaction>
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-05-01</value></transactionDate>
+      <transactionCoding>
+        <transactionCode>P</transactionCode>
+        <is10b51Transaction>1</is10b51Transaction>
+      </transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>2500</value></transactionShares>
+        <transactionPricePerShare><value>100</value></transactionPricePerShare>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction><value>15500</value></sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+    </nonDerivativeTransaction>
+""",
+        )
+        xml = xml.replace(
+            """
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-05-01</value></transactionDate>
+      <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>10</value></transactionShares>
+        <transactionPricePerShare><value>10</value></transactionPricePerShare>
+      </transactionAmounts>
+    </nonDerivativeTransaction>
+""",
+            "",
+        )
+        raw = bot.parse_form4(xml, 500_000, {"789019": "MSFT"})
+        self.assertEqual(len(raw["MSFT"]), 2)
+
+        aggregated = bot.aggregate_alerts(raw, 500_000)
+        alerts = aggregated["MSFT"]
+        self.assertEqual(len(alerts), 1)
+        alert = alerts[0]
+        self.assertEqual(alert.kind, "BUY")
+        self.assertEqual(alert.amount, 550000)
+        self.assertEqual(alert.shares, 5500)
+        self.assertEqual(alert.price, 100)
+        self.assertTrue(alert.is_10b5_1)
+        self.assertEqual(bot.format_holding_change_percent(alert), "+55%")
+
+    def test_aggregate_alerts_keeps_mixed_plan_unmarked(self):
+        raw = {
+            "MSFT": [
+                bot.AlertEntry("Jane Doe", "CEO", "BUY", 3000, 100, 300000, True, "2026-05-01", 13000, 300000, 0, 300000, 3000, 0, 3000),
+                bot.AlertEntry("Jane Doe", "CEO", "BUY", 2500, 100, 250000, False, "2026-05-01", 15500, 250000, 0, 250000, 2500, 0, 2500),
+            ]
+        }
+        alert = bot.aggregate_alerts(raw, 500_000)["MSFT"][0]
+        self.assertFalse(alert.is_10b5_1)
+
+    def test_aggregate_alerts_uses_net_direction_for_mixed_buy_and_sell(self):
+        raw = {
+            "MSFT": [
+                bot.AlertEntry("Jane Doe", "CEO", "BUY", 8000, 100, 800000, True, "2026-05-01", 18000, 800000, 0, 800000, 8000, 0, 8000),
+                bot.AlertEntry("Jane Doe", "CEO", "SELL", 3000, 100, 300000, True, "2026-05-01", 15000, 0, 300000, -300000, 0, 3000, -3000),
+            ]
+        }
+        alert = bot.aggregate_alerts(raw, 1_000_000)["MSFT"][0]
+        self.assertEqual(alert.kind, "BUY")
+        self.assertEqual(alert.amount, 1_100_000)
+        self.assertEqual(alert.net_amount, 500000)
+        self.assertEqual(alert.net_shares, 5000)
+        self.assertEqual(alert.price, 100)
+        self.assertEqual(bot.format_holding_change_percent(alert), "+50%")
+
+    def test_process_form4_urls_runs_in_input_order(self):
+        original_download_text = bot.download_text
+        original_parse_form4 = bot.parse_form4
+        calls = []
+        try:
+            def fake_download_text(url):
+                calls.append(("download", url))
+                return url
+
+            def fake_parse_form4(xml, minimum_usd, cik_to_requested_ticker):
+                calls.append(("parse", xml))
+                return {}
+
+            bot.download_text = fake_download_text
+            bot.parse_form4 = fake_parse_form4
+            processed = bot.process_form4_urls(["url-1", "url-2", "url-3"], 500_000, {})
+            self.assertEqual(processed, ({}, 3, 0))
+            self.assertEqual(
+                calls,
+                [
+                    ("download", "url-1"),
+                    ("parse", "url-1"),
+                    ("download", "url-2"),
+                    ("parse", "url-2"),
+                    ("download", "url-3"),
+                    ("parse", "url-3"),
+                ],
+            )
+        finally:
+            bot.download_text = original_download_text
+            bot.parse_form4 = original_parse_form4
+
+    def test_sell_to_cover_footnote_is_filtered_before_aggregation(self):
+        sell_to_cover_xml = """
+<ownershipDocument>
+  <issuer>
+    <issuerCik>0000789019</issuerCik>
+    <issuerTradingSymbol>MSFT</issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId><rptOwnerName>Jane Doe</rptOwnerName></reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isDirector>0</isDirector>
+      <isOfficer>1</isOfficer>
+      <officerTitle>CEO</officerTitle>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-05-01</value></transactionDate>
+      <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>10000</value></transactionShares>
+        <transactionPricePerShare><value>60</value></transactionPricePerShare>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction><value>90000</value></sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+      <footnoteId id="F1"/>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+  <footnotes>
+    <footnote id="F1">Shares were sold to cover tax withholding obligations.</footnote>
+  </footnotes>
+</ownershipDocument>
+"""
+        self.assertEqual(bot.parse_form4(sell_to_cover_xml, 500_000, {"789019": "MSFT"})["MSFT"], [])
+
+    def test_inline_sell_to_cover_text_is_filtered(self):
+        inline_xml = FORM4_XML.replace("<transactionCode>P</transactionCode>", "<transactionCode>S</transactionCode>", 1)
+        inline_xml = inline_xml.replace(
+            "</nonDerivativeTransaction>",
+            "<remarks>Net settlement to satisfy tax obligation from RSU vesting.</remarks></nonDerivativeTransaction>",
+            1,
+        )
+        parsed = bot.parse_form4(inline_xml, 500_000, {"789019": "MSFT"})
+        self.assertEqual(parsed["MSFT"][0].amount, 100)
 
     def test_parse_form4_infers_position_when_title_says_see_remarks(self):
         officer_xml = (

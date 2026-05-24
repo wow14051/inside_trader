@@ -12,7 +12,7 @@
 - 只提醒真实买入 `P` 和卖出 `S`，跳过授予、行权等非买卖交易。
 - 按交易金额阈值过滤，默认 `40000` 美元。
 - 优先使用 SEC daily master index，找不到时自动 fallback 到 browse-edgar。
-- 并行下载 SEC index 和 Form 4 文件，减少运行时间。
+- 顺序下载 SEC index 和 Form 4 文件，优先保证稳定性和不漏报。
 - 支持钉钉加签 Webhook。
 - 继续兼容 Discord Webhook。
 - 未提供股票代码时，可自动从项目目录或桌面导入 `.ebk`、`.txt`、`.csv` 股票列表文件。
@@ -265,20 +265,7 @@ EBK 示例：
 
 ## 性能参数
 
-默认已经开启并行下载。一般不用调整；如果 SEC 访问不稳定，可以适当降低 worker 数。
-
-```text
-INDEX_WORKERS    SEC master-index 并行下载数，默认 4
-FORM4_WORKERS    Form 4 文件并行下载数，默认 8
-```
-
-PowerShell 示例：
-
-```powershell
-$env:INDEX_WORKERS="2"
-$env:FORM4_WORKERS="4"
-python stock_insider_bot.py --tickers=AAPL,MSFT
-```
+当前版本按顺序下载 SEC index 和 Form 4 文件，优先保证稳定性和不漏报，因此没有 worker 参数。
 
 ## 测试
 
