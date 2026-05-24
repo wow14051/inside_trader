@@ -2,8 +2,8 @@ name: Daily Insider Check
 
 on:
   schedule:
-    # GitHub cron uses UTC. 06:00 UTC = 14:00 Asia/Shanghai.
-    - cron: "0 6 * * *"
+    # GitHub cron uses UTC. 06:17 UTC = 14:17 Asia/Shanghai.
+    - cron: "17 6 * * *"
 
   workflow_dispatch:
     inputs:
